@@ -62,3 +62,15 @@ type AccessProfile struct {
 	RDStationID    string
 	TeamRDUserIDs  []string
 }
+
+type WhatsAppConnectionState struct {
+	Instance string `json:"instance"`
+	State    string `json:"state"`
+}
+
+type WhatsAppQRCode struct {
+	Instance string `json:"instance"`
+	Code     string `json:"code,omitempty"`
+	Base64   string `json:"base64,omitempty"`
+	Pairing  string `json:"pairing_code,omitempty"`
+}

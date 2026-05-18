@@ -38,6 +38,8 @@ func (h *Handler) RegisterProtectedRoutes(r gin.IRouter) {
 	r.GET("/allowlist", h.listAllowlist)
 	r.POST("/allowlist", h.upsertAllowlist)
 	r.PUT("/allowlist/:id", h.upsertAllowlist)
+	r.GET("/whatsapp/status", h.whatsappStatus)
+	r.POST("/whatsapp/qrcode", h.whatsappQRCode)
 	r.GET("/rd-station/stages", h.listStages)
 }
 
@@ -166,6 +168,16 @@ func (h *Handler) upsertAllowlist(c *gin.Context) {
 func (h *Handler) listStages(c *gin.Context) {
 	stages, err := h.rd.GetDealStages(c.Request.Context())
 	respondList(c, stages, err)
+}
+
+func (h *Handler) whatsappStatus(c *gin.Context) {
+	status, err := h.resources.WhatsAppStatus(c.Request.Context())
+	respondMutation(c, status, err)
+}
+
+func (h *Handler) whatsappQRCode(c *gin.Context) {
+	qr, err := h.resources.WhatsAppQRCode(c.Request.Context())
+	respondMutation(c, qr, err)
 }
 
 func (h *Handler) setCookie(c *gin.Context, value string, maxAge int) {

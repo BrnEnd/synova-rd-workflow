@@ -8,15 +8,20 @@ import {
   ListChecks,
   LogOut,
   Plus,
+  QrCode,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
   Users,
   X,
 } from "lucide-react";
+import QRCode from "qrcode";
 import {
   Alert,
   AllowlistEntry,
   Collaborator,
+  generateWhatsAppQRCode,
+  getWhatsAppStatus,
   listAlerts,
   listAllowlist,
   listCollaborators,
@@ -27,10 +32,12 @@ import {
   saveAllowlist,
   saveCollaborator,
   testAlert,
+  WhatsAppQRCode,
+  WhatsAppStatus,
   isUnauthorizedError,
 } from "@/lib/api";
 
-type Tab = "overview" | "collaborators" | "alerts" | "allowlist";
+type Tab = "overview" | "whatsapp" | "collaborators" | "alerts" | "allowlist";
 
 const emptyCollaborator: Collaborator = { name: "", email: "", whatsapp: "", role: "seller", rdstation_id: "", supervisor_id: "", active: true };
 const emptyAllowlist: AllowlistEntry = { phone_number: "", label: "", role: "seller", collaborator_id: "", active: true };
@@ -51,6 +58,9 @@ export default function DashboardPage() {
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [allowlist, setAllowlist] = useState<AllowlistEntry[]>([]);
+  const [whatsappStatus, setWhatsAppStatus] = useState<WhatsAppStatus | null>(null);
+  const [whatsappQR, setWhatsAppQR] = useState<WhatsAppQRCode | null>(null);
+  const [qrImage, setQrImage] = useState("");
   const [stages, setStages] = useState<Array<{ id: string; name: string }>>([]);
   const [collaboratorDraft, setCollaboratorDraft] = useState<Collaborator>(emptyCollaborator);
   const [allowlistDraft, setAllowlistDraft] = useState<AllowlistEntry>(emptyAllowlist);
@@ -58,12 +68,13 @@ export default function DashboardPage() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [testingAlertID, setTestingAlertID] = useState<string | null>(null);
+  const [connectingWhatsApp, setConnectingWhatsApp] = useState(false);
 
   async function load() {
     setLoading(true);
     setMessage("");
     try {
-      const [profile, c, a, w] = await Promise.all([me(), listCollaborators(), listAlerts(), listAllowlist()]);
+      const [profile, c, a, w, ws] = await Promise.all([me(), listCollaborators(), listAlerts(), listAllowlist(), getWhatsAppStatus().catch(() => null)]);
       if (profile.must_change_password) {
         window.location.href = "/change-password";
         return;
@@ -72,6 +83,7 @@ export default function DashboardPage() {
       setCollaborators((c.items ?? []).map((item) => ({ ...item, role: item.role || "seller", rdstation_id: item.rdstation_id || "", supervisor_id: item.supervisor_id || "" })));
       setAlerts((a.items ?? []).map((item) => ({ ...item, repeat_interval_hours: item.repeat_interval_hours || 48 })));
       setAllowlist((w.items ?? []).map((item) => ({ ...item, role: item.role || "seller", collaborator_id: item.collaborator_id || "" })));
+      setWhatsAppStatus(ws);
       listStages()
         .then((result) => {
           setStages((result.items ?? []).map((s) => ({ id: s.id ?? s.ID ?? "", name: s.name ?? s.Name ?? "" })).filter((s) => s.id));
@@ -172,6 +184,33 @@ export default function DashboardPage() {
     }
   }
 
+  async function refreshWhatsAppStatus() {
+    setMessage("");
+    try {
+      setWhatsAppStatus(await getWhatsAppStatus());
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Falha ao consultar status do WhatsApp");
+    }
+  }
+
+  async function generateQRCode() {
+    setConnectingWhatsApp(true);
+    setMessage("");
+    setWhatsAppQR(null);
+    setQrImage("");
+    try {
+      const qr = await generateWhatsAppQRCode();
+      setWhatsAppQR(qr);
+      const image = normalizeQRImage(qr.base64);
+      setQrImage(image || (qr.code ? await QRCode.toDataURL(qr.code, { width: 280, margin: 1 }) : ""));
+      await refreshWhatsAppStatus();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Falha ao gerar QR Code do WhatsApp");
+    } finally {
+      setConnectingWhatsApp(false);
+    }
+  }
+
   function editAlert(item: Alert) {
     setAlertDraft({ ...item, repeat_interval_hours: item.repeat_interval_hours || 48, recipient_ids: item.recipient_ids ?? [] });
     setTab("alerts");
@@ -207,6 +246,7 @@ function recipientSummary(ids: string[]) {
 
           <nav className="grid grid-cols-2 gap-1.5 lg:grid-cols-1">
             <NavButton active={tab === "overview"} icon={<ShieldCheck size={17} />} onClick={() => setTab("overview")} label="Resumo" />
+            <NavButton active={tab === "whatsapp"} icon={<Smartphone size={17} />} onClick={() => setTab("whatsapp")} label="WhatsApp" />
             <NavButton active={tab === "collaborators"} icon={<Users size={17} />} onClick={() => setTab("collaborators")} label="Colaboradores" />
             <NavButton active={tab === "alerts"} icon={<Bell size={17} />} onClick={() => setTab("alerts")} label="Alertas" />
             <NavButton active={tab === "allowlist"} icon={<ListChecks size={17} />} onClick={() => setTab("allowlist")} label="Allowlist do bot" />
@@ -247,6 +287,61 @@ function recipientSummary(ids: string[]) {
                   <p><strong className="text-orange-100">Frequencia</strong> fica em cada alerta: horas para primeira mensagem e intervalo para repetir para a mesma negociacao.</p>
                 </div>
               </Panel>
+            </>
+          )}
+
+          {tab === "whatsapp" && (
+            <>
+              <Header title="WhatsApp" subtitle="Conexao da instancia Evolution API usada pela Sil." />
+              <div className="grid gap-3 xl:grid-cols-[22rem_1fr]">
+                <Panel title="Status da conexao">
+                  <div className="grid gap-3">
+                    <div className="rounded-md border border-white/10 bg-black/10 p-3">
+                      <p className="text-xs uppercase text-emerald-50/58">Instancia</p>
+                      <p className="mt-1 font-medium">{whatsappStatus?.instance || "Nao informado"}</p>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/10 p-3">
+                      <p className="text-xs uppercase text-emerald-50/58">Estado</p>
+                      <p className={`mt-1 font-semibold ${isWhatsAppConnected(whatsappStatus?.state) ? "text-emerald-200" : "text-amber-100"}`}>
+                        {statusLabel(whatsappStatus?.state)}
+                      </p>
+                    </div>
+                    <button onClick={refreshWhatsAppStatus} className="flex items-center justify-center gap-2 rounded-md border border-white/10 px-3 py-2 text-sm hover:bg-white/7">
+                      <RefreshCw size={16} /> Atualizar status
+                    </button>
+                    {!isWhatsAppConnected(whatsappStatus?.state) && (
+                      <PrimaryButton onClick={generateQRCode} disabled={connectingWhatsApp}>
+                        <QrCode size={16} /> {connectingWhatsApp ? "Gerando..." : "Gerar QR Code"}
+                      </PrimaryButton>
+                    )}
+                  </div>
+                </Panel>
+                <Panel title="Conectar telefone">
+                  <div className="grid min-h-72 place-items-center rounded-md border border-white/10 bg-black/10 p-4 text-center">
+                    {isWhatsAppConnected(whatsappStatus?.state) ? (
+                      <div className="max-w-md">
+                        <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-md bg-emerald-300/15 text-emerald-100">
+                          <Check size={28} />
+                        </div>
+                        <h3 className="font-semibold">WhatsApp conectado</h3>
+                        <p className="mt-2 text-sm leading-relaxed text-emerald-50/68">A instancia esta pronta para receber e enviar mensagens pela Sil.</p>
+                      </div>
+                    ) : qrImage ? (
+                      <div className="grid justify-items-center gap-3">
+                        <img src={qrImage} alt="QR Code para conectar WhatsApp" className="h-72 w-72 rounded-md bg-white p-3" />
+                        <p className="max-w-md text-sm leading-relaxed text-emerald-50/68">Escaneie este QR Code no WhatsApp do telefone que sera usado pela Sil.</p>
+                        {whatsappQR?.pairing_code && <p className="rounded-md border border-white/10 px-3 py-2 text-sm">Codigo de pareamento: <strong>{whatsappQR.pairing_code}</strong></p>}
+                      </div>
+                    ) : (
+                      <div className="max-w-md">
+                        <QrCode className="mx-auto mb-3 text-emerald-100/80" size={48} />
+                        <h3 className="font-semibold">Aguardando QR Code</h3>
+                        <p className="mt-2 text-sm leading-relaxed text-emerald-50/68">Quando a instancia nao estiver conectada, gere um QR Code para vincular o WhatsApp pelo aplicativo no celular.</p>
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+              </div>
             </>
           )}
 
@@ -474,8 +569,8 @@ function Metric({ title, value, icon }: { title: string; value: number; icon: Re
   );
 }
 
-function PrimaryButton({ children }: { children: React.ReactNode }) {
-  return <button className="brand-button flex min-h-9 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold">{children}</button>;
+function PrimaryButton({ children, onClick, disabled }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
+  return <button onClick={onClick} disabled={disabled} className="brand-button flex min-h-9 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold disabled:opacity-60">{children}</button>;
 }
 
 function Rows<T>({ items, getKey, render }: { items: T[]; getKey: (item: T) => string; render: (item: T) => React.ReactNode }) {
@@ -483,6 +578,25 @@ function Rows<T>({ items, getKey, render }: { items: T[]; getKey: (item: T) => s
     return <p className="rounded-md border border-white/10 px-3 py-5 text-center text-xs text-emerald-50/62">Nenhum registro ainda.</p>;
   }
   return <div className="grid gap-2">{items.map((item) => <div key={getKey(item)}>{render(item)}</div>)}</div>;
+}
+
+function isWhatsAppConnected(state?: string) {
+  const normalized = (state || "").toLowerCase();
+  return normalized === "open" || normalized === "connected";
+}
+
+function statusLabel(state?: string) {
+  if (!state) return "Nao conectado";
+  if (isWhatsAppConnected(state)) return "Conectado";
+  if (state.toLowerCase() === "connecting") return "Conectando";
+  if (state.toLowerCase() === "close") return "Desconectado";
+  return state;
+}
+
+function normalizeQRImage(base64?: string) {
+  if (!base64) return "";
+  if (base64.startsWith("data:image")) return base64;
+  return `data:image/png;base64,${base64}`;
 }
 
 function Row({

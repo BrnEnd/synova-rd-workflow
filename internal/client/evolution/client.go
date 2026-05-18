@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"synova-rd-workflow/internal/domain"
 )
 
 // Client wraps the Evolution API HTTP endpoints used by the bot.
@@ -78,6 +80,54 @@ func (c *Client) RemoveFromAllowlist(ctx context.Context, phone string) error {
 	return nil
 }
 
+func (c *Client) ConnectionState(ctx context.Context) (domain.WhatsAppConnectionState, error) {
+	data, err := c.get(ctx, fmt.Sprintf("/instance/connectionState/%s", c.instance))
+	if err != nil {
+		return domain.WhatsAppConnectionState{}, err
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return domain.WhatsAppConnectionState{}, fmt.Errorf("evolution connection state unmarshal: %w", err)
+	}
+
+	state := firstString(raw, "state", "connection", "status")
+	if state == "" {
+		if instance, ok := raw["instance"].(map[string]interface{}); ok {
+			state = firstString(instance, "state", "connection", "status")
+		}
+	}
+	return domain.WhatsAppConnectionState{Instance: c.instance, State: state}, nil
+}
+
+func (c *Client) ConnectQRCode(ctx context.Context) (domain.WhatsAppQRCode, error) {
+	data, err := c.get(ctx, fmt.Sprintf("/instance/connect/%s", c.instance))
+	if err != nil {
+		return domain.WhatsAppQRCode{}, err
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return domain.WhatsAppQRCode{}, fmt.Errorf("evolution connect qr unmarshal: %w", err)
+	}
+
+	qr := domain.WhatsAppQRCode{
+		Instance: c.instance,
+		Code:     firstString(raw, "code", "qrcode", "qr", "qrCode"),
+		Base64:   firstString(raw, "base64", "qrcodeBase64", "qrCodeBase64"),
+		Pairing:  firstString(raw, "pairingCode", "pairing_code"),
+	}
+	if nested, ok := raw["qrcode"].(map[string]interface{}); ok {
+		if qr.Code == "" {
+			qr.Code = firstString(nested, "code", "qrcode", "qr", "qrCode")
+		}
+		if qr.Base64 == "" {
+			qr.Base64 = firstString(nested, "base64", "qrcodeBase64", "qrCodeBase64")
+		}
+	}
+	return qr, nil
+}
+
 func (c *Client) SetWebhook(ctx context.Context, webhookURL string) error {
 	payload := map[string]interface{}{
 		"enabled":           true,
@@ -124,6 +174,30 @@ func (c *Client) post(ctx context.Context, path string, payload interface{}) err
 	return nil
 }
 
+func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("evolution new request: %w", err)
+	}
+	req.Header.Set("apikey", c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("evolution http do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("evolution read body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("evolution status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return respBody, nil
+}
+
 func (c *Client) postWithRetry(ctx context.Context, path string, payload interface{}) error {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -161,4 +235,18 @@ func normalizeNumber(number string) string {
 	number = strings.TrimSuffix(number, "@c.us")
 	number = strings.TrimSuffix(number, "@lid")
 	return number
+}
+
+func firstString(values map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key]; ok {
+			switch v := value.(type) {
+			case string:
+				return strings.TrimSpace(v)
+			case fmt.Stringer:
+				return strings.TrimSpace(v.String())
+			}
+		}
+	}
+	return ""
 }

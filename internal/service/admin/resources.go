@@ -41,6 +41,8 @@ type EvolutionAdminClient interface {
 	AddToAllowlist(ctx context.Context, phone string) error
 	RemoveFromAllowlist(ctx context.Context, phone string) error
 	SendTextMessage(ctx context.Context, to string, text string) error
+	ConnectionState(ctx context.Context) (domain.WhatsAppConnectionState, error)
+	ConnectQRCode(ctx context.Context) (domain.WhatsAppQRCode, error)
 }
 
 type RDStationClient interface {
@@ -282,6 +284,22 @@ func (s *ResourceService) IsAllowed(ctx context.Context, phone string) (bool, er
 		return false, nil
 	}
 	return entry.Active, nil
+}
+
+func (s *ResourceService) WhatsAppStatus(ctx context.Context) (domain.WhatsAppConnectionState, error) {
+	state, err := s.evolution.ConnectionState(ctx)
+	if err != nil {
+		return domain.WhatsAppConnectionState{}, err
+	}
+	return state, nil
+}
+
+func (s *ResourceService) WhatsAppQRCode(ctx context.Context) (domain.WhatsAppQRCode, error) {
+	qr, err := s.evolution.ConnectQRCode(ctx)
+	if err != nil {
+		return domain.WhatsAppQRCode{}, err
+	}
+	return qr, nil
 }
 
 func (s *ResourceService) AccessProfile(ctx context.Context, phone string) (domain.AccessProfile, error) {
