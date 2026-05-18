@@ -170,3 +170,10 @@ variable "evolution_send_delay" {
   type        = string
   default     = "10s"
 }
+
+variable "admin_jwt_private_key" {
+  description = "Base64-encoded PKCS1 PEM RSA private key for signing admin JWT tokens. Generated once and stored here to survive Lambda cold starts. Leave empty to auto-generate (NOT recommended for production)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

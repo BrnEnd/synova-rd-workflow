@@ -25,3 +25,6 @@ admin_origin             = ""
 admin_cookie_secure      = false
 alert_check_interval     = "30m"
 evolution_send_delay     = "10s"
+# Generate once with: go run ./cmd/genkey/main.go
+# and store the output here. Never leave empty in production.
+admin_jwt_private_key    = ""

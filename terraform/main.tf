@@ -61,7 +61,8 @@ locals {
     var.whatsapp_phone_number_id != "" ? { WHATSAPP_PHONE_NUMBER_ID = var.whatsapp_phone_number_id } : {},
     var.whatsapp_verify_token != "" ? { WHATSAPP_VERIFY_TOKEN = var.whatsapp_verify_token } : {},
     var.whatsapp_app_secret != "" ? { WHATSAPP_APP_SECRET = var.whatsapp_app_secret } : {},
-    var.evolution_allowed_numbers != "" ? { EVOLUTION_ALLOWED_NUMBERS = var.evolution_allowed_numbers } : {}
+    var.evolution_allowed_numbers != "" ? { EVOLUTION_ALLOWED_NUMBERS = var.evolution_allowed_numbers } : {},
+    var.admin_jwt_private_key != "" ? { ADMIN_JWT_PRIVATE_KEY = var.admin_jwt_private_key } : {}
   )
 }
 

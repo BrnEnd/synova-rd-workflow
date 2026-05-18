@@ -83,6 +83,7 @@ func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.Dynam
 
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(loggingMiddleware(logger))
 	r.Use(adminMiddleware.AdminSecurityHeaders())
 	r.Use(adminMiddleware.AdminCORS(cfg.AdminOrigin))
 	r.GET("/health", func(c *gin.Context) {
@@ -97,6 +98,19 @@ func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.Dynam
 	admin.RegisterProtectedRoutes(protectedAdmin)
 
 	return r
+}
+
+func loggingMiddleware(logger *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		logger.Info("request",
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+			"status_code", c.Writer.Status(),
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	}
 }
 
 func configureLogger(level string) *slog.Logger {
