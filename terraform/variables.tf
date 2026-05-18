@@ -10,6 +10,36 @@ variable "function_zip" {
   default     = "../function.zip"
 }
 
+variable "lambda_memory_size" {
+  description = "Lambda memory in MB. 128 MB keeps the function in the cheapest/free-tier friendly compute band."
+  type        = number
+  default     = 128
+}
+
+variable "dynamodb_read_capacity" {
+  description = "Provisioned DynamoDB read capacity units. Keep low to stay inside the free tier for light usage."
+  type        = number
+  default     = 1
+}
+
+variable "dynamodb_write_capacity" {
+  description = "Provisioned DynamoDB write capacity units. Keep low to stay inside the free tier for light usage."
+  type        = number
+  default     = 1
+}
+
+variable "api_throttle_burst_limit" {
+  description = "HTTP API burst throttle guardrail to reduce accidental request spikes."
+  type        = number
+  default     = 5
+}
+
+variable "api_throttle_rate_limit" {
+  description = "HTTP API steady-state requests per second throttle guardrail."
+  type        = number
+  default     = 2
+}
+
 variable "whatsapp_access_token" {
   description = "Meta WhatsApp Cloud API access token."
   type        = string

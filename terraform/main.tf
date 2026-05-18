@@ -21,10 +21,12 @@ locals {
 }
 
 resource "aws_dynamodb_table" "conversations" {
-  name         = local.table_name
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "PK"
-  range_key    = "SK"
+  name           = local.table_name
+  billing_mode   = "PROVISIONED"
+  read_capacity  = var.dynamodb_read_capacity
+  write_capacity = var.dynamodb_write_capacity
+  hash_key       = "PK"
+  range_key      = "SK"
 
   attribute {
     name = "PK"
@@ -98,7 +100,7 @@ resource "aws_lambda_function" "workflow" {
   runtime          = "provided.al2023"
   architectures    = ["arm64"]
   timeout          = 15
-  memory_size      = 256
+  memory_size      = var.lambda_memory_size
   role             = aws_iam_role.lambda.arn
 
   environment {
@@ -151,6 +153,11 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.webhook.id
   name        = "$default"
   auto_deploy = true
+
+  default_route_settings {
+    throttling_burst_limit = var.api_throttle_burst_limit
+    throttling_rate_limit  = var.api_throttle_rate_limit
+  }
 }
 
 resource "aws_lambda_permission" "api_gateway" {

@@ -1,4 +1,9 @@
 aws_region               = "us-east-1"
+lambda_memory_size       = 128
+dynamodb_read_capacity   = 1
+dynamodb_write_capacity  = 1
+api_throttle_burst_limit = 5
+api_throttle_rate_limit  = 2
 whatsapp_access_token    = ""
 whatsapp_phone_number_id = ""
 whatsapp_verify_token    = ""
