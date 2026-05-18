@@ -410,19 +410,19 @@ func isDeleteRequest(msg string) bool {
 }
 
 func GreetingResponse() string {
-	return `Olá! Eu sou a Sil, a inteligência artificial da Silmax.
+	return `Olá, tudo bem? Eu sou a Sil, a inteligência artificial da Silmax.
 
-Comigo, você poderá acompanhar tudo o que precisar sobre seus negócios em andamento junto à Silmax. Estarei pronta para ajudar com informações sobre negociações, clientes que precisam de contato, relatórios, status de processos e muito mais.
+Em breve, você poderá contar comigo para acompanhar seus negócios em andamento junto à Silmax, consultar informações sobre negociações, identificar clientes que precisam de contato, acompanhar relatórios, verificar status de processos e acessar outros recursos de apoio à operação comercial.
 
-O acesso às funcionalidades da Sil será realizado exclusivamente através do número de telefone que está recebendo esta mensagem. Outros números não terão acesso aos seus recursos e informações.
+Por segurança, o acesso às funcionalidades da Sil será realizado exclusivamente pelo número de telefone que está recebendo esta mensagem. Outros números não terão acesso aos recursos e informações vinculados à sua conta.
 
-No momento, ainda estou em fase de implantação e minhas funcionalidades estão sendo preparadas para oferecer a melhor experiência possível.
+Neste momento, estou em fase de implantação, e minhas funcionalidades estão sendo preparadas para oferecer uma experiência segura, estável e eficiente.
 
-Salve meu número e, assim que eu estiver pronta para te ajudar, avisarei você!
+Por favor, salve este número em seus contatos. Assim que eu estiver disponível para utilização, você será informado por aqui.
 
-Nos vemos em breve!
+Até breve.
 
-Sil 😉
+Sil
 
 Silmax
 Excellence and Quality`
