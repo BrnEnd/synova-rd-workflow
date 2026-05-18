@@ -1,0 +1,36 @@
+# Environment and secrets
+.env
+.env.*
+*.env
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Dependencies and build output
+node_modules/
+admin/node_modules/
+.next/
+admin/.next/
+dist/
+build/
+bin/
+bootstrap
+function.zip
+*.zip
+
+# Terraform local state
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
+terraform/*.tfvars
+terraform/*.tfvars.json
+terraform/tfplan
+*.tfplan
+
+# Local runtime artifacts
+tmp/
+*.log
+.DS_Store
+Thumbs.db

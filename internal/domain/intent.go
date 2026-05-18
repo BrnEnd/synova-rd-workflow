@@ -1,0 +1,25 @@
+package domain
+
+// IntentName represents a recognized CRM intent.
+type IntentName string
+
+const (
+	IntentGetContacts            IntentName = "get_contacts"
+	IntentGetDeals               IntentName = "get_deals"
+	IntentGetDeal                IntentName = "get_deal"
+	IntentGetDealContacts        IntentName = "get_deal_contacts"
+	IntentCreateContact          IntentName = "create_contact"
+	IntentCreateDeal             IntentName = "create_deal"
+	IntentUpdateDeal             IntentName = "update_deal"
+	IntentMoveDealStage          IntentName = "move_deal_stage"
+	IntentUpdateContact          IntentName = "update_contact"
+	IntentAssociateContactToDeal IntentName = "associate_contact_to_deal"
+	IntentUnknown                IntentName = "unknown"
+)
+
+// Intent holds the structured output from the NLP layer.
+type Intent struct {
+	Name       IntentName
+	Parameters map[string]string
+	RawText    string
+}

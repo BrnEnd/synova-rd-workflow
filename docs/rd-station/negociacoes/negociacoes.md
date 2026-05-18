@@ -1,0 +1,72 @@
+Negociações
+
+# Negociações
+
+A negociação é uma das três entidades chaves do RD Station CRM:
+
+* Negociação
+* Contato
+* Empresa
+
+Ela representa a possibilidade de negociar uma venda e contém todas as fases do processo de negociação.
+
+Toda negociação cadastrada percorre o funil de vendas e, a cada atualização, as informações referentes ao avanço da negociação podem ser registradas em campos específicos.
+
+Assim, todo o histórico de negociações, sejam elas ganhas (venda realizada) ou perdidas, fica armazenado no cadastro da empresa à qual pertencem, independente do vendedor responsável e do tipo de produto ou serviço negociado.
+
+> ❗️ Atenção
+>
+> Toda informação cadastrada deve conter no mínimo 2 caracteres.
+
+## Query params
+
+Parâmetros utilizados para **listar** e **obter** negociações.
+
+| Nome                     | Tipo    | Descrição                                                                                                                                                                                                                                                                                                      |
+| :----------------------- | :------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| token                    | String  | Token do usuário                                                                                                                                                                                                                                                                                               |
+| deal\_id                 | String  | ID da negociação a ser obtida                                                                                                                                                                                                                                                                                  |
+| page                     | String  | Número da página listada. Valor padrão é 1                                                                                                                                                                                                                                                                     |
+| limit                    | String  | Limite de negociações que virão por listagem. Valor padrão é 20. Valor máximo é 200                                                                                                                                                                                                                            |
+| order                    | String  | Ordenação. Valor padrão é `created_at`.                                                                                                                                                                                                                                                                        |
+| direction                | String  | Ordenação da lista. `asc` ou `desc`, padrão é `desc`                                                                                                                                                                                                                                                           |
+| name                     | String  | Nome da negociação                                                                                                                                                                                                                                                                                             |
+| exact\_name              | String  | Para buscas com nome exato, usar o parâmetro `exact_name=true`                                                                                                                                                                                                                                                 |
+| win                      | String  | Negociações ganhas. Com o valor `true` para trazer as negociações ganhas, `false` para trazer as negociações perdidas e `null` para retornar as negociações em aberto.                                                                                                                                         |
+| user\_id                 | String  | ID do usuário relacionado à negociação.                                                                                                                                                                                                                                                                        |
+| start\_date              | String  | Primeiro dia/hora em que deve ser aplicado o filtro para o parâmetro `closed_at_period` ou `created_at_period`. Ex.: `"start_date": "2020-12-14T15:00:00"`                                                                                                                                                     |
+| end\_date                | String  | Último dia/hora em que deve ser aplicado o filtro para o parâmetro `closed_at_period` ou `created_at_period`. Ex.: `"end_date": "2020-12-14T15:00:00"`                                                                                                                                                         |
+| closed\_at               | Boolean | Ao informar `true`, retorna as negociações ganhas e perdidas. Ao informar `false`, retorna as negociações em aberto ou pausadas.                                                                                                                                                                               |
+| closed\_at\_period       | Boolean | Data de fechamento da negociação: se `true` deve ser informado `start_date` e `end_date`.                                                                                                                                                                                                                      |
+| created\_at\_period      | Boolean | Data de criação da negociação: se `true`, deve ser informado `start_date` e `end_date`.                                                                                                                                                                                                                        |
+| prediction\_date\_period | Boolean | Data de previsão de fechamento da negociação: se `true`, deve ser informado `start_date` e `end_date`.                                                                                                                                                                                                         |
+| closed\_by\_id           | String  | ID do usuário que fechou a venda                                                                                                                                                                                                                                                                               |
+| deal\_stage\_id          | String  | ID da etapa                                                                                                                                                                                                                                                                                                    |
+| deal\_lost\_reason\_id   | String  | ID do motivo de perda                                                                                                                                                                                                                                                                                          |
+| organization             | String  | ID da empresa                                                                                                                                                                                                                                                                                                  |
+| hold                     | String  | Estado da negociação pausada. Se marcado como `true`, retorna todas negociações pausadas. Para outros casos, não deve-se utilizar esse parâmetro.                                                                                                                                                              |
+| product\_presence        | String  | Negociações que contenham produtos e serviços relacionados: `false` (nenhum produto relacionado), `true` (um ou mais produtos relacionados) ou uma lista de IDs de produto. A lista de IDs deve ser informada com os valores separados por vírgula. Ex.: `677c217ae3abc4001404bb15, 67916786e3a0f30015e26537`. |
+| deal\_pipeline\_id       | String  | ID do funil de vendas                                                                                                                                                                                                                                                                                          |
+
+## Body params
+
+Parâmetros utilizados para **criar** e **atualizar** negociações.
+
+| Nome                   | Tipo             | Descrição                                    | Obrigatório | Observação                                                                                                                                                |
+| :--------------------- | :--------------- | :------------------------------------------- | :---------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| name                   | String           | Nome da negociação a ser obtida              | ✓           | Obrigatório somente ao criar uma negociação.                                                                                                              |
+| deal\_stage\_id        | String           | ID da etapa do funil                         | ✘           |                                                                                                                                                           |
+| deal\_custom\_fields   | Object           | Campos customizados da negociação            | ✘           |                                                                                                                                                           |
+| deal\_source           | Object           | Fonte da negociação                          | ✘           |                                                                                                                                                           |
+| contacts               | Array of objects | Novos Contatos associados a negociação       | ✘           | Cria novos contatos vinculados a negociação                                                                                                               |
+| set\_contacts          | Object           | Contatos existentes associados a negociação  | ✘           | Vincula contatos existentes a negociação                                                                                                                  |
+| deal\_products         | Array of objects | Produtos vinculados a negociação             | ✘           |                                                                                                                                                           |
+| campaign               | Object           | Campanha da negociação                       | ✘           |                                                                                                                                                           |
+| organization           | Object           | Empresa à qual a negociação pertence         | ✘           |                                                                                                                                                           |
+| user\_id               | Object           | Usuário responsável pela negociação          | ✘           | Se esse parâmetro não for enviado na requisição, o dono do token (utilizado para autorizar a requisição) será atribuído como responsável pela negociação. |
+| hold                   | Boolean          | Status da negociação                         | ✘           | Opções: `true` (negociação pausada), `null` (negociação em aberto).                                                                                       |
+| rating                 | Integer          | Avaliação da negociação                      | ✘           |                                                                                                                                                           |
+| win                    | Boolean          | Status da negociação                         | ✘           | Opções: `true` (negociação ganha), `false` (negociação perdida), `null` (negociação em aberto).                                                           |
+| prediction\_date       | Date             | Data da previsão de fechamento da negociação | ✘           | Formato: `YYYY-MM-DD`.                                                                                                                                    |
+| deal\_lost\_reason\_id | String           | ID do motivo de perda                        | ✘           |                                                                                                                                                           |
+| contacts.legal\_base   | Array            | Base legal                                   | ✘           |                                                                                                                                                           |

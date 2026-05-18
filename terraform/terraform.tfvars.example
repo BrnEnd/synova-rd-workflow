@@ -1,0 +1,10 @@
+aws_region               = "us-east-1"
+whatsapp_access_token    = ""
+whatsapp_phone_number_id = ""
+whatsapp_verify_token    = ""
+whatsapp_app_secret      = ""
+openai_api_key           = ""
+openai_model             = "gpt-5.4-nano"
+rdstation_token          = ""
+log_level                = "INFO"
+nlp_context_window       = 10

@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 165 18% 10%;
+  --foreground: 160 26% 96%;
+  --muted: 164 11% 63%;
+  --border: 165 12% 24%;
+  --brand: #df5b1f;
+  --brand-contrast: #230b03;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(223, 91, 31, 0.3), transparent 31rem),
+    radial-gradient(circle at 84% 20%, rgba(246, 199, 95, 0.2), transparent 28rem),
+    linear-gradient(135deg, #211109 0%, #171210 46%, #1b1713 100%);
+  color: hsl(var(--foreground));
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.11);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 42px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(22px) saturate(145%);
+}
+
+.field {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(5, 22, 20, 0.58);
+  color: #f4fffc;
+  outline: none;
+  padding: 0.55rem 0.7rem;
+  min-height: 2.35rem;
+}
+
+.field:focus {
+  border-color: rgba(223, 91, 31, 0.78);
+}
+
+.brand-mark {
+  background: var(--brand);
+  color: var(--brand-contrast);
+}
+
+.brand-button {
+  background: var(--brand);
+  color: var(--brand-contrast);
+}
+
+.brand-button:hover {
+  filter: brightness(1.08);
+}
+
+.brand-icon-bg {
+  background: rgba(223, 91, 31, 0.14);
+  color: #ffb08c;
+}
+
+.brand-active {
+  background: var(--brand);
+  color: var(--brand-contrast);
+}
