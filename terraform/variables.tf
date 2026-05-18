@@ -92,6 +92,25 @@ variable "evolution_allowed_numbers" {
   default     = ""
 }
 
+variable "evolution_ecs_instance_type" {
+  description = "EC2 instance type used by the ECS host that runs Evolution API and the admin panel."
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "evolution_root_volume_size" {
+  description = "Root EBS volume size in GB for the Evolution ECS host."
+  type        = number
+  default     = 30
+}
+
+variable "evolution_postgres_password" {
+  description = "Postgres password used by the Evolution API local database. Generated when empty."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "openai_api_key" {
   description = "OpenAI API key."
   type        = string
@@ -131,13 +150,13 @@ variable "admin_email" {
 variable "admin_origin" {
   description = "Allowed admin frontend origin for CORS."
   type        = string
-  default     = "*"
+  default     = ""
 }
 
 variable "admin_cookie_secure" {
   description = "Whether the admin session cookie requires HTTPS."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "alert_check_interval" {

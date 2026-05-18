@@ -6,6 +6,14 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 }
 
@@ -13,11 +21,24 @@ provider "aws" {
   region = var.aws_region
 }
 
+data "aws_caller_identity" "current" {}
+
 locals {
-  app_name       = "synova-rd-workflow"
-  table_name     = "synova-rd-workflow-conversations"
-  lambda_zip     = abspath("${path.module}/${var.function_zip}")
-  lambda_log_arn = "${aws_cloudwatch_log_group.lambda.arn}:*"
+  app_name                              = "synova-rd-workflow"
+  table_name                            = "synova-rd-workflow-conversations"
+  lambda_zip                            = abspath("${path.module}/${var.function_zip}")
+  lambda_log_arn                        = "${aws_cloudwatch_log_group.lambda.arn}:*"
+  effective_evolution_url               = var.evolution_base_url != "" ? trimsuffix(var.evolution_base_url, "/") : "http://${aws_eip.evolution.public_ip}"
+  effective_evolution_key               = var.evolution_api_key != "" ? var.evolution_api_key : random_password.evolution_api_key.result
+  effective_evolution_postgres_password = var.evolution_postgres_password != "" ? var.evolution_postgres_password : random_password.evolution_postgres_password.result
+  effective_admin_origin                = var.admin_origin != "" ? trimsuffix(var.admin_origin, "/") : "http://${aws_eip.evolution.public_ip}:3002"
+  api_base_url                          = trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")
+  ecr_registry                          = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  admin_source_hash = sha256(join("", [
+    for file in fileset("${path.module}/../admin", "**") :
+    filesha256("${path.module}/../admin/${file}")
+    if !startswith(file, "node_modules/") && !startswith(file, ".next/")
+  ]))
   lambda_environment = merge(
     {
       OPENAI_API_KEY       = var.openai_api_key
@@ -28,20 +49,30 @@ locals {
       LOG_LEVEL            = var.log_level
       NLP_CONTEXT_WINDOW   = tostring(var.nlp_context_window)
       ADMIN_EMAIL          = var.admin_email
-      ADMIN_ORIGIN         = var.admin_origin
+      ADMIN_ORIGIN         = local.effective_admin_origin
       ADMIN_COOKIE_SECURE  = tostring(var.admin_cookie_secure)
       ALERT_CHECK_INTERVAL = var.alert_check_interval
       EVOLUTION_SEND_DELAY = var.evolution_send_delay
       EVOLUTION_INSTANCE   = var.evolution_instance
+      EVOLUTION_BASE_URL   = local.effective_evolution_url
+      EVOLUTION_API_KEY    = local.effective_evolution_key
     },
     var.whatsapp_access_token != "" ? { WHATSAPP_ACCESS_TOKEN = var.whatsapp_access_token } : {},
     var.whatsapp_phone_number_id != "" ? { WHATSAPP_PHONE_NUMBER_ID = var.whatsapp_phone_number_id } : {},
     var.whatsapp_verify_token != "" ? { WHATSAPP_VERIFY_TOKEN = var.whatsapp_verify_token } : {},
     var.whatsapp_app_secret != "" ? { WHATSAPP_APP_SECRET = var.whatsapp_app_secret } : {},
-    var.evolution_base_url != "" ? { EVOLUTION_BASE_URL = var.evolution_base_url } : {},
-    var.evolution_api_key != "" ? { EVOLUTION_API_KEY = var.evolution_api_key } : {},
     var.evolution_allowed_numbers != "" ? { EVOLUTION_ALLOWED_NUMBERS = var.evolution_allowed_numbers } : {}
   )
+}
+
+resource "random_password" "evolution_api_key" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "evolution_postgres_password" {
+  length  = 32
+  special = false
 }
 
 resource "aws_dynamodb_table" "conversations" {
@@ -158,6 +189,12 @@ resource "aws_apigatewayv2_route" "get_webhook" {
 resource "aws_apigatewayv2_route" "post_webhook" {
   api_id    = aws_apigatewayv2_api.webhook.id
   route_key = "POST /webhook"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
+resource "aws_apigatewayv2_route" "default" {
+  api_id    = aws_apigatewayv2_api.webhook.id
+  route_key = "$default"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
