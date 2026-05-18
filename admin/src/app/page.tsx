@@ -32,8 +32,8 @@ import {
 
 type Tab = "overview" | "collaborators" | "alerts" | "allowlist";
 
-const emptyCollaborator: Collaborator = { name: "", email: "", whatsapp: "", active: true };
-const emptyAllowlist: AllowlistEntry = { phone_number: "", label: "", active: true };
+const emptyCollaborator: Collaborator = { name: "", email: "", whatsapp: "", role: "seller", rdstation_id: "", supervisor_id: "", active: true };
+const emptyAllowlist: AllowlistEntry = { phone_number: "", label: "", role: "seller", collaborator_id: "", active: true };
 const emptyAlert: Alert = {
   name: "",
   deal_stage_id: "",
@@ -69,9 +69,9 @@ export default function DashboardPage() {
         return;
       }
       setEmail(profile.email);
-      setCollaborators(c.items ?? []);
+      setCollaborators((c.items ?? []).map((item) => ({ ...item, role: item.role || "seller", rdstation_id: item.rdstation_id || "", supervisor_id: item.supervisor_id || "" })));
       setAlerts((a.items ?? []).map((item) => ({ ...item, repeat_interval_hours: item.repeat_interval_hours || 48 })));
-      setAllowlist(w.items ?? []);
+      setAllowlist((w.items ?? []).map((item) => ({ ...item, role: item.role || "seller", collaborator_id: item.collaborator_id || "" })));
       listStages()
         .then((result) => {
           setStages((result.items ?? []).map((s) => ({ id: s.id ?? s.ID ?? "", name: s.name ?? s.Name ?? "" })).filter((s) => s.id));
@@ -177,12 +177,18 @@ export default function DashboardPage() {
     setTab("alerts");
   }
 
-  function recipientSummary(ids: string[]) {
+function recipientSummary(ids: string[]) {
     const selected = ids
       .map((id) => collaborators.find((item) => item.id === id))
       .filter(Boolean) as Collaborator[];
     if (selected.length === 0) return "Sem destinatarios";
     return selected.map((item) => `${item.name} (${item.whatsapp})`).join(", ");
+  }
+
+  function roleLabel(role: string) {
+    if (role === "director") return "Diretoria";
+    if (role === "supervisor") return "Supervisor";
+    return "Vendedor";
   }
 
   return (
@@ -259,12 +265,28 @@ export default function DashboardPage() {
                     <Field label="WhatsApp para receber alertas" help="Formato E.164, exemplo: +5524999999999.">
                       <input className="field" value={collaboratorDraft.whatsapp} onChange={(e) => setCollaboratorDraft({ ...collaboratorDraft, whatsapp: e.target.value })} />
                     </Field>
+                    <Field label="Perfil de acesso">
+                      <select className="field" value={collaboratorDraft.role} onChange={(e) => setCollaboratorDraft({ ...collaboratorDraft, role: e.target.value as Collaborator["role"] })}>
+                        <option value="director">Diretoria</option>
+                        <option value="supervisor">Supervisor</option>
+                        <option value="seller">Vendedor</option>
+                      </select>
+                    </Field>
+                    <Field label="ID do usuario no RD Station" help="Usado para limitar negocios por responsavel.">
+                      <input className="field" value={collaboratorDraft.rdstation_id} onChange={(e) => setCollaboratorDraft({ ...collaboratorDraft, rdstation_id: e.target.value })} />
+                    </Field>
+                    <Field label="Supervisor" help="Define equipe: vendedores vinculados ao supervisor aparecem para ele.">
+                      <select className="field" value={collaboratorDraft.supervisor_id} onChange={(e) => setCollaboratorDraft({ ...collaboratorDraft, supervisor_id: e.target.value })}>
+                        <option value="">Sem supervisor</option>
+                        {collaborators.filter((item) => item.role === "supervisor").map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    </Field>
                     <PrimaryButton><Plus size={16} /> Salvar colaborador</PrimaryButton>
                   </form>
                 </Panel>
                 <Panel title="Lista de colaboradores">
                   <Rows items={collaborators} getKey={(item) => item.id ?? item.email} render={(item) => (
-                    <Row title={item.name} subtitle={`${item.email} - ${item.whatsapp}`} active={item.active} onToggle={() => toggleCollaborator(item)} />
+                    <Row title={item.name} subtitle={`${roleLabel(item.role)} - ${item.email} - ${item.whatsapp}${item.rdstation_id ? ` - RD ${item.rdstation_id}` : ""}`} active={item.active} onToggle={() => toggleCollaborator(item)} />
                   )} />
                 </Panel>
               </div>
@@ -370,12 +392,28 @@ export default function DashboardPage() {
                     <Field label="Rotulo">
                       <input className="field" value={allowlistDraft.label} onChange={(e) => setAllowlistDraft({ ...allowlistDraft, label: e.target.value })} />
                     </Field>
+                    <Field label="Colaborador vinculado" help="Se informado, o perfil e o ID RD do colaborador serao usados no bot.">
+                      <select className="field" value={allowlistDraft.collaborator_id} onChange={(e) => {
+                        const c = collaborators.find((item) => item.id === e.target.value);
+                        setAllowlistDraft({ ...allowlistDraft, collaborator_id: e.target.value, role: c?.role ?? allowlistDraft.role });
+                      }}>
+                        <option value="">Sem vinculo</option>
+                        {collaborators.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Perfil fallback">
+                      <select className="field" value={allowlistDraft.role} onChange={(e) => setAllowlistDraft({ ...allowlistDraft, role: e.target.value as AllowlistEntry["role"] })}>
+                        <option value="director">Diretoria</option>
+                        <option value="supervisor">Supervisor</option>
+                        <option value="seller">Vendedor</option>
+                      </select>
+                    </Field>
                     <PrimaryButton><Plus size={16} /> Salvar numero</PrimaryButton>
                   </form>
                 </Panel>
                 <Panel title="Numeros liberados">
                   <Rows items={allowlist} getKey={(item) => item.id ?? item.phone_number} render={(item) => (
-                    <Row title={item.phone_number} subtitle={`${item.label || "Sem rotulo"}${item.sync_pending ? " - sync pendente" : ""}`} active={item.active} onToggle={() => toggleAllowlist(item)} />
+                    <Row title={item.phone_number} subtitle={`${item.label || "Sem rotulo"} - ${roleLabel(item.role)}${item.sync_pending ? " - sync pendente" : ""}`} active={item.active} onToggle={() => toggleAllowlist(item)} />
                   )} />
                 </Panel>
               </div>

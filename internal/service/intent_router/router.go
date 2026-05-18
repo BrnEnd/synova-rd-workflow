@@ -2,15 +2,28 @@ package intent_router
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"synova-rd-workflow/internal/domain"
 	rdSvc "synova-rd-workflow/internal/service/rdstation"
 )
 
+var (
+	ErrPermissionDenied         = errors.New("permission denied")
+	ErrDeletionRequiresApproval = errors.New("deal deletion requires RD Station approval")
+)
+
 // Router maps intents to RD Station service calls.
 type Router struct {
 	rdstation *rdSvc.Service
+}
+
+type Actor struct {
+	Role          string
+	RDStationID   string
+	TeamRDUserIDs []string
 }
 
 // New returns a new intent Router.
@@ -21,7 +34,12 @@ func New(rdstation *rdSvc.Service) *Router {
 // Route executes the appropriate CRM operation for the given intent
 // and returns the result as a plain interface{} for NLP formatting.
 func (r *Router) Route(ctx context.Context, intent domain.Intent) (interface{}, error) {
+	return r.RouteForActor(ctx, intent, Actor{Role: "director"})
+}
+
+func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor Actor) (interface{}, error) {
 	p := intent.Parameters
+	owners := allowedOwnerIDs(actor)
 
 	switch intent.Name {
 	case domain.IntentGetContacts:
@@ -33,16 +51,17 @@ func (r *Router) Route(ctx context.Context, intent domain.Intent) (interface{}, 
 
 	case domain.IntentGetDeals:
 		return r.rdstation.GetDeals(ctx, rdSvc.GetDealsParams{
-			Name:   p["name"],
-			Stage:  p["stage"],
-			Status: p["status"],
+			Name:           p["name"],
+			Stage:          p["stage"],
+			Status:         p["status"],
+			AllowedOwnerID: owners,
 		})
 
 	case domain.IntentGetDeal:
-		return r.rdstation.GetDeal(ctx, p["deal_name"])
+		return r.rdstation.GetDealForOwners(ctx, p["deal_name"], owners)
 
 	case domain.IntentGetDealContacts:
-		return r.rdstation.GetDealContacts(ctx, p["deal_name"])
+		return r.rdstation.GetDealContactsForOwners(ctx, p["deal_name"], owners)
 
 	case domain.IntentCreateContact:
 		return r.rdstation.CreateContact(ctx, rdSvc.CreateContactParams{
@@ -61,13 +80,20 @@ func (r *Router) Route(ctx context.Context, intent domain.Intent) (interface{}, 
 
 	case domain.IntentUpdateDeal:
 		return r.rdstation.UpdateDeal(ctx, rdSvc.UpdateDealParams{
-			DealName: p["deal_name"],
-			Field:    p["field"],
-			Value:    p["value"],
+			DealName:       p["deal_name"],
+			Field:          p["field"],
+			Value:          p["value"],
+			AllowedOwnerID: owners,
 		})
 
 	case domain.IntentMoveDealStage:
-		return r.rdstation.MoveDealStage(ctx, p["deal_name"], p["target_stage"])
+		return r.rdstation.MoveDealStageForOwners(ctx, p["deal_name"], p["target_stage"], owners)
+
+	case domain.IntentDeleteDeal:
+		if normalizeRole(actor.Role) != "director" {
+			return nil, ErrPermissionDenied
+		}
+		return nil, ErrDeletionRequiresApproval
 
 	case domain.IntentUpdateContact:
 		return r.rdstation.UpdateContact(ctx, rdSvc.UpdateContactParams{
@@ -98,5 +124,34 @@ func (r *Router) ResolveDealSelection(ctx context.Context, intent domain.Intent,
 
 	default:
 		return r.rdstation.GetDealByID(ctx, deal.ID)
+	}
+}
+
+func allowedOwnerIDs(actor Actor) map[string]struct{} {
+	if normalizeRole(actor.Role) == "director" {
+		return nil
+	}
+	ids := append([]string{actor.RDStationID}, actor.TeamRDUserIDs...)
+	out := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			out[id] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		return map[string]struct{}{"__no_owner_configured__": {}}
+	}
+	return out
+}
+
+func normalizeRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "director", "diretoria", "diretor", "the god", "god":
+		return "director"
+	case "supervisor":
+		return "supervisor"
+	default:
+		return "seller"
 	}
 }

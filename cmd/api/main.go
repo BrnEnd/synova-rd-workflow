@@ -147,6 +147,7 @@ func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.Dynam
 	if err := adminResources.SeedAllowlist(context.Background(), cfg.EvolutionAllowedNumbers); err != nil {
 		logger.Warn("failed to seed admin allowlist from env", "error", err)
 	}
+	handler.SetAllowChecker(adminResources)
 	evolutionHandler.SetAllowChecker(adminResources)
 	admin := adminHandler.New(adminAuth, adminResources, rd, cfg.AdminCookieSecure)
 	scheduler := adminSvc.NewScheduler(adminData, rd, evolution, cfg.AlertCheckInterval, logger)

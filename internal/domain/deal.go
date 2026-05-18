@@ -7,9 +7,17 @@ type Deal struct {
 	ID        string
 	Name      string
 	Stage     Stage
+	Owner     DealOwner
 	Contacts  []Contact
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// DealOwner identifies the RD Station user responsible for a deal.
+type DealOwner struct {
+	ID    string
+	Name  string
+	Email string
 }
 
 // Stage represents a pipeline stage in RD Station CRM.

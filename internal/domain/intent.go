@@ -12,6 +12,7 @@ const (
 	IntentCreateDeal             IntentName = "create_deal"
 	IntentUpdateDeal             IntentName = "update_deal"
 	IntentMoveDealStage          IntentName = "move_deal_stage"
+	IntentDeleteDeal             IntentName = "delete_deal"
 	IntentUpdateContact          IntentName = "update_contact"
 	IntentAssociateContactToDeal IntentName = "associate_contact_to_deal"
 	IntentUnknown                IntentName = "unknown"

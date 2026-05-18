@@ -28,6 +28,7 @@ Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 - create_deal    → parâmetros: "name" (OBRIGATÓRIO — nome da nova negociação), "contact_name" (opcional), "stage" (opcional)
 - update_deal    → parâmetros: "deal_name" (OBRIGATÓRIO), "field" (ex: "name" ou "stage"), "value" (novo valor)
 - move_deal_stage → parâmetros: "deal_name" (OBRIGATÓRIO), "target_stage" (OBRIGATÓRIO — nome do estágio destino)
+- delete_deal    -> parametro OBRIGATORIO: "deal_name" (quando o usuario pedir para apagar/excluir/deletar uma negociacao)
 - update_contact → parâmetros: "contact_name" (OBRIGATÓRIO — nome do contato), "field" (OBRIGATÓRIO — ex: "email", "phone", "name"), "value" (OBRIGATÓRIO — novo valor)
 - associate_contact_to_deal → parâmetros: "deal_name" (OBRIGATÓRIO), "contact_name" (OBRIGATÓRIO)
 - unknown        → quando não for possível identificar a intenção
@@ -54,7 +55,7 @@ var intentTool = openaiClient.Tool{
 					"enum": []string{
 						"get_contacts", "get_deals", "get_deal", "get_deal_contacts",
 						"create_contact", "create_deal", "update_deal", "move_deal_stage",
-						"update_contact", "associate_contact_to_deal", "unknown",
+						"delete_deal", "update_contact", "associate_contact_to_deal", "unknown",
 					},
 					"description": "A intenção identificada na mensagem",
 				},

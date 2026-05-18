@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,6 +232,23 @@ func TestWebhookUnknownIntentSendsFallback(t *testing.T) {
 	}
 	if sender.text == "" {
 		t.Error("expected non-empty fallback reply")
+	}
+}
+
+func TestWebhookGreetingSendsSilIntro(t *testing.T) {
+	sender := &mockSender{}
+	r := buildTestRouter(t, &mockNLPService{intent: domain.Intent{Name: domain.IntentUnknown}}, sender, nil)
+	body := textPayload(t, "5511999999999", "text", "Oi")
+	w := postMetaPayload(t, r, body, true)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if sender.to != "5511999999999" {
+		t.Errorf("expected sender target, got %q", sender.to)
+	}
+	if !strings.Contains(sender.text, "Eu sou a Sil") || !strings.Contains(sender.text, "Excellence and Quality") {
+		t.Errorf("expected Sil intro message, got %q", sender.text)
 	}
 }
 

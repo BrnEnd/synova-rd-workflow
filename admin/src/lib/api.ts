@@ -16,6 +16,9 @@ export type Collaborator = {
   name: string;
   email: string;
   whatsapp: string;
+  role: "director" | "supervisor" | "seller";
+  rdstation_id: string;
+  supervisor_id: string;
   active: boolean;
 };
 
@@ -35,6 +38,8 @@ export type AllowlistEntry = {
   id?: string;
   phone_number: string;
   label: string;
+  role: "director" | "supervisor" | "seller";
+  collaborator_id: string;
   active: boolean;
   sync_pending?: boolean;
 };

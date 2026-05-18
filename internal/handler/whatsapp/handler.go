@@ -29,15 +29,32 @@ type Sender interface {
 	SendTextMessage(ctx context.Context, to string, text string) error
 }
 
+type AllowChecker interface {
+	IsAllowed(ctx context.Context, phone string) (bool, error)
+}
+
+type AccessProfiler interface {
+	AccessProfile(ctx context.Context, phone string) (domain.AccessProfile, error)
+}
+
 // Handler holds all dependencies for the WhatsApp webhook.
 type Handler struct {
-	conv        *convSvc.Service
-	nlpSvc      nlp.ServiceInterface
-	router      *intentRouter.Router
-	sender      Sender
-	verifyToken string
-	appSecret   string
-	logger      *slog.Logger
+	conv           *convSvc.Service
+	nlpSvc         nlp.ServiceInterface
+	router         *intentRouter.Router
+	sender         Sender
+	verifyToken    string
+	appSecret      string
+	logger         *slog.Logger
+	allowChecker   AllowChecker
+	accessProfiler AccessProfiler
+}
+
+func (h *Handler) SetAllowChecker(checker AllowChecker) {
+	h.allowChecker = checker
+	if profiler, ok := checker.(AccessProfiler); ok {
+		h.accessProfiler = profiler
+	}
 }
 
 // New returns a new WhatsApp webhook handler.
@@ -162,6 +179,10 @@ func (h *Handler) processTextMessage(c *gin.Context, inbound inboundTextMessage)
 	ctx := c.Request.Context()
 	start := time.Now()
 	from := "+" + inbound.From
+	if !h.isAllowed(ctx, from) {
+		h.logger.WarnContext(ctx, "whatsapp sender not allowed", "from", normalizePhoneForLog(inbound.From))
+		return nil
+	}
 
 	session, err := h.conv.GetOrCreateSession(ctx, from)
 	if err != nil {
@@ -173,14 +194,29 @@ func (h *Handler) processTextMessage(c *gin.Context, inbound inboundTextMessage)
 		return fmt.Errorf("get history: %w", err)
 	}
 
+	if isGreeting(msg) {
+		reply := GreetingResponse()
+		_ = h.conv.SaveUserMessage(ctx, session.ID, msg, "greeting")
+		_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
+		if err := h.sender.SendTextMessage(ctx, inbound.From, reply); err != nil {
+			return fmt.Errorf("send whatsapp greeting reply: %w", err)
+		}
+		return nil
+	}
+
 	intent, err := h.nlpSvc.ParseIntent(ctx, history, msg)
 	if err != nil {
 		h.logger.WarnContext(ctx, "nlp parse intent failed", "session_id", session.ID, "wamid", inbound.ID, "error", err)
 		intent = domain.Intent{Name: domain.IntentUnknown, RawText: msg}
 	}
+	if isDeleteRequest(msg) {
+		intent.Name = domain.IntentDeleteDeal
+		intent.RawText = msg
+	}
 
 	_ = h.conv.SaveUserMessage(ctx, session.ID, msg, string(intent.Name))
-	reply := h.buildReply(ctx, session.ID, intent)
+	actor := h.actorForPhone(ctx, from)
+	reply := h.buildReply(ctx, session.ID, intent, actor)
 	_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
 
 	if err := h.sender.SendTextMessage(ctx, inbound.From, reply); err != nil {
@@ -197,12 +233,12 @@ func (h *Handler) processTextMessage(c *gin.Context, inbound inboundTextMessage)
 	return nil
 }
 
-func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domain.Intent) string {
+func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domain.Intent, actor intentRouter.Actor) string {
 	if intent.Name == domain.IntentUnknown {
 		return nlp.FallbackResponse()
 	}
 
-	result, routeErr := h.router.Route(ctx, intent)
+	result, routeErr := h.router.RouteForActor(ctx, intent, actor)
 	if routeErr != nil {
 		return h.handleRouteError(routeErr, intent)
 	}
@@ -217,6 +253,13 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 }
 
 func (h *Handler) handleRouteError(err error, intent domain.Intent) string {
+	if errors.Is(err, intentRouter.ErrPermissionDenied) {
+		return "Voce nao tem permissao para executar essa acao. Vendedores acessam apenas os proprios negocios, supervisores acessam os proprios negocios e os da equipe, e exclusoes ficam restritas a diretoria pelo fluxo de aprovacao do RD Station."
+	}
+	if errors.Is(err, intentRouter.ErrDeletionRequiresApproval) {
+		return "A exclusao de negociacoes deve ser feita pelo fluxo de aprovacao do RD Station. Como diretoria, voce pode solicitar a exclusao por la para que o processo registre a aprovacao corretamente."
+	}
+
 	var multiErr *rdSvc.MultipleDealsError
 	if errors.As(err, &multiErr) {
 		names := make([]string, 0, len(multiErr.Deals))
@@ -245,6 +288,60 @@ func (h *Handler) handleRouteError(err error, intent domain.Intent) string {
 
 	h.logger.Warn("route error", "intent", string(intent.Name), "error", err)
 	return nlp.ErrorResponse("RD Station")
+}
+
+func (h *Handler) isAllowed(ctx context.Context, phone string) bool {
+	if h.allowChecker == nil {
+		return true
+	}
+	allowed, err := h.allowChecker.IsAllowed(ctx, phone)
+	if err != nil {
+		h.logger.WarnContext(ctx, "admin allowlist check failed", "from", normalizePhoneForLog(strings.TrimPrefix(phone, "+")), "error", err)
+		return false
+	}
+	return allowed
+}
+
+func (h *Handler) actorForPhone(ctx context.Context, phone string) intentRouter.Actor {
+	if h.accessProfiler == nil {
+		return intentRouter.Actor{Role: "director"}
+	}
+	profile, err := h.accessProfiler.AccessProfile(ctx, phone)
+	if err != nil {
+		h.logger.WarnContext(ctx, "access profile lookup failed", "from", normalizePhoneForLog(strings.TrimPrefix(phone, "+")), "error", err)
+		return intentRouter.Actor{Role: "seller"}
+	}
+	return intentRouter.Actor{Role: profile.Role, RDStationID: profile.RDStationID, TeamRDUserIDs: profile.TeamRDUserIDs}
+}
+
+func isGreeting(msg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(msg))
+	normalized = strings.Trim(normalized, "!.? ")
+	return normalized == "oi"
+}
+
+func isDeleteRequest(msg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(msg))
+	return strings.Contains(normalized, "apagar") || strings.Contains(normalized, "excluir") || strings.Contains(normalized, "deletar")
+}
+
+func GreetingResponse() string {
+	return `Olá! Eu sou a Sil, a inteligência artificial da Silmax.
+
+Comigo, você poderá acompanhar tudo o que precisar sobre seus negócios em andamento junto à Silmax. Estarei pronta para ajudar com informações sobre negociações, clientes que precisam de contato, relatórios, status de processos e muito mais.
+
+O acesso às funcionalidades da Sil será realizado exclusivamente através do número de telefone que está recebendo esta mensagem. Outros números não terão acesso aos seus recursos e informações.
+
+No momento, ainda estou em fase de implantação e minhas funcionalidades estão sendo preparadas para oferecer a melhor experiência possível.
+
+Salve meu número e, assim que eu estiver pronta para te ajudar, avisarei você!
+
+Nos vemos em breve!
+
+Sil 😉
+
+Silmax
+Excellence and Quality`
 }
 
 func normalizePhoneForLog(from string) string {

@@ -56,6 +56,20 @@ Servicos principais:
 - Painel admin: `http://localhost:3002`
 - Evolution API: `http://localhost:8081`
 
+## Regras de Acesso da Sil
+
+O bot responde a saudacao `Oi` com a mensagem institucional da Sil para numeros autorizados. Numeros fora da allowlist sao ignorados pelo webhook.
+
+Perfis disponiveis:
+
+- `director`: diretoria, tambem chamado internamente de The God. Pode consultar e operar todos os negocios.
+- `supervisor`: consulta e opera os proprios negocios e os negocios da equipe.
+- `seller`: vendedor PJ ou PF. Consulta e opera somente negocios sob sua responsabilidade.
+
+A equipe do supervisor e definida no painel admin em `Colaboradores`: cada vendedor deve ter o campo `Supervisor` apontando para o colaborador supervisor, por exemplo Renato. O filtro de negocios usa o `ID do usuario no RD Station` cadastrado em cada colaborador e compara com o responsavel da negociacao no RD.
+
+Exclusao de negociacoes nao e executada pelo bot. Quando o usuario pedir para apagar/excluir/deletar um negocio, o bot informa que a exclusao deve seguir o fluxo de aprovacao do RD Station; usuarios fora da diretoria recebem bloqueio de permissao.
+
 ## Desenvolvimento
 
 Backend:

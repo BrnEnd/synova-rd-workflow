@@ -27,9 +27,10 @@ type CreateContactParams struct {
 
 // GetDealsParams maps intent parameters to the deals query.
 type GetDealsParams struct {
-	Name   string
-	Stage  string
-	Status string // "open", "won", "lost"
+	Name           string
+	Stage          string
+	Status         string // "open", "won", "lost"
+	AllowedOwnerID map[string]struct{}
 }
 
 // CreateDealParams holds required fields to create a deal.
@@ -41,9 +42,10 @@ type CreateDealParams struct {
 
 // UpdateDealParams holds fields to update a deal.
 type UpdateDealParams struct {
-	DealName string
-	Field    string
-	Value    string
+	DealName       string
+	Field          string
+	Value          string
+	AllowedOwnerID map[string]struct{}
 }
 
 // MultipleDealsError is returned when a search finds more than one deal with the same name.
@@ -174,7 +176,7 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 		return nil, err
 	}
 
-	return mapDeals(resp), nil
+	return filterDealsByOwner(mapDeals(resp), params.AllowedOwnerID), nil
 }
 
 // CreateDeal creates a new deal in RD Station.
@@ -211,12 +213,13 @@ func (s *Service) CreateDeal(ctx context.Context, params CreateDealParams) (doma
 			ID:   resp.DealStage.ID,
 			Name: resp.DealStage.Name,
 		},
+		Owner: mapOwner(resp),
 	}, nil
 }
 
 // UpdateDeal updates a field on a deal identified by name.
 func (s *Service) UpdateDeal(ctx context.Context, params UpdateDealParams) (domain.Deal, error) {
-	deal, err := s.findSingleDeal(ctx, params.DealName)
+	deal, err := s.findSingleDeal(ctx, params.DealName, params.AllowedOwnerID)
 	if err != nil {
 		return domain.Deal{}, err
 	}
@@ -247,12 +250,17 @@ func (s *Service) UpdateDeal(ctx context.Context, params UpdateDealParams) (doma
 			ID:   resp.DealStage.ID,
 			Name: resp.DealStage.Name,
 		},
+		Owner: mapOwner(resp),
 	}, nil
 }
 
 // MoveDealStage moves a deal to a target stage identified by name.
 func (s *Service) MoveDealStage(ctx context.Context, dealName, targetStageName string) (domain.Deal, error) {
-	deal, err := s.findSingleDeal(ctx, dealName)
+	return s.MoveDealStageForOwners(ctx, dealName, targetStageName, nil)
+}
+
+func (s *Service) MoveDealStageForOwners(ctx context.Context, dealName, targetStageName string, allowedOwnerID map[string]struct{}) (domain.Deal, error) {
+	deal, err := s.findSingleDeal(ctx, dealName, allowedOwnerID)
 	if err != nil {
 		return domain.Deal{}, err
 	}
@@ -274,12 +282,17 @@ func (s *Service) MoveDealStage(ctx context.Context, dealName, targetStageName s
 			ID:   resp.DealStage.ID,
 			Name: resp.DealStage.Name,
 		},
+		Owner: mapOwner(resp),
 	}, nil
 }
 
 // GetDeal retrieves a single deal by name (finds ID first, then fetches details).
 func (s *Service) GetDeal(ctx context.Context, dealName string) (domain.Deal, error) {
-	deal, err := s.findSingleDeal(ctx, dealName)
+	return s.GetDealForOwners(ctx, dealName, nil)
+}
+
+func (s *Service) GetDealForOwners(ctx context.Context, dealName string, allowedOwnerID map[string]struct{}) (domain.Deal, error) {
+	deal, err := s.findSingleDeal(ctx, dealName, allowedOwnerID)
 	if err != nil {
 		return domain.Deal{}, err
 	}
@@ -306,6 +319,7 @@ func (s *Service) GetDealByID(ctx context.Context, dealID string) (domain.Deal, 
 			ID:   resp.DealStage.ID,
 			Name: resp.DealStage.Name,
 		},
+		Owner:     mapOwner(resp),
 		Contacts:  contacts,
 		CreatedAt: parseRDTime(resp.CreatedAt),
 		UpdatedAt: parseRDTime(resp.UpdatedAt),
@@ -314,7 +328,11 @@ func (s *Service) GetDealByID(ctx context.Context, dealID string) (domain.Deal, 
 
 // GetDealContacts retrieves all contacts linked to a deal identified by name.
 func (s *Service) GetDealContacts(ctx context.Context, dealName string) ([]domain.Contact, error) {
-	deal, err := s.findSingleDeal(ctx, dealName)
+	return s.GetDealContactsForOwners(ctx, dealName, nil)
+}
+
+func (s *Service) GetDealContactsForOwners(ctx context.Context, dealName string, allowedOwnerID map[string]struct{}) ([]domain.Contact, error) {
+	deal, err := s.findSingleDeal(ctx, dealName, allowedOwnerID)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +397,7 @@ func (s *Service) UpdateContact(ctx context.Context, params UpdateContactParams)
 
 // AssociateContactToDeal links an existing contact to a deal by name.
 func (s *Service) AssociateContactToDeal(ctx context.Context, dealName, contactName string) (domain.Deal, error) {
-	deal, err := s.findSingleDeal(ctx, dealName)
+	deal, err := s.findSingleDeal(ctx, dealName, nil)
 	if err != nil {
 		return domain.Deal{}, err
 	}
@@ -417,6 +435,7 @@ func (s *Service) AssociateContactToDeal(ctx context.Context, dealName, contactN
 		ID:        resp.ID,
 		Name:      resp.Name,
 		Stage:     domain.Stage{ID: resp.DealStage.ID, Name: resp.DealStage.Name},
+		Owner:     mapOwner(resp),
 		Contacts:  dealContacts,
 		CreatedAt: parseRDTime(resp.CreatedAt),
 		UpdatedAt: parseRDTime(resp.UpdatedAt),
@@ -425,7 +444,7 @@ func (s *Service) AssociateContactToDeal(ctx context.Context, dealName, contactN
 
 // --- helpers ---
 
-func (s *Service) findSingleDeal(ctx context.Context, name string) (domain.Deal, error) {
+func (s *Service) findSingleDeal(ctx context.Context, name string, allowedOwnerID map[string]struct{}) (domain.Deal, error) {
 	if name == "" {
 		return domain.Deal{}, &MissingDealNameError{}
 	}
@@ -435,7 +454,7 @@ func (s *Service) findSingleDeal(ctx context.Context, name string) (domain.Deal,
 		return domain.Deal{}, err
 	}
 
-	deals := mapDeals(resp)
+	deals := filterDealsByOwner(mapDeals(resp), allowedOwnerID)
 
 	switch len(deals) {
 	case 0:
@@ -499,12 +518,35 @@ func mapDeals(resp []rdClient.DealResponse) []domain.Deal {
 			ID:        d.ID,
 			Name:      d.Name,
 			Stage:     domain.Stage{ID: d.DealStage.ID, Name: d.DealStage.Name},
+			Owner:     mapOwner(d),
 			Contacts:  contacts,
 			CreatedAt: parseRDTime(d.CreatedAt),
 			UpdatedAt: parseRDTime(d.UpdatedAt),
 		})
 	}
 	return deals
+}
+
+func mapOwner(d rdClient.DealResponse) domain.DealOwner {
+	for _, owner := range []rdClient.DealUserResponse{d.DealOwner, d.Owner, d.User} {
+		if owner.ID != "" || owner.Email != "" || owner.Name != "" {
+			return domain.DealOwner{ID: owner.ID, Name: owner.Name, Email: owner.Email}
+		}
+	}
+	return domain.DealOwner{}
+}
+
+func filterDealsByOwner(deals []domain.Deal, allowedOwnerID map[string]struct{}) []domain.Deal {
+	if len(allowedOwnerID) == 0 {
+		return deals
+	}
+	out := make([]domain.Deal, 0, len(deals))
+	for _, deal := range deals {
+		if _, ok := allowedOwnerID[deal.Owner.ID]; ok {
+			out = append(out, deal)
+		}
+	}
+	return out
 }
 
 func parseRDTime(s string) time.Time {

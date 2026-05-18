@@ -10,13 +10,16 @@ type AdminConfig struct {
 }
 
 type Collaborator struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Email     string    `json:"email"`
-	WhatsApp  string    `json:"whatsapp"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Email        string    `json:"email"`
+	WhatsApp     string    `json:"whatsapp"`
+	Role         string    `json:"role"`
+	RDStationID  string    `json:"rdstation_id"`
+	SupervisorID string    `json:"supervisor_id"`
+	Active       bool      `json:"active"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type Alert struct {
@@ -35,17 +38,27 @@ type Alert struct {
 }
 
 type AllowlistEntry struct {
-	ID          string    `json:"id"`
-	PhoneNumber string    `json:"phone_number"`
-	Label       string    `json:"label"`
-	Active      bool      `json:"active"`
-	SyncPending bool      `json:"sync_pending"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	PhoneNumber    string    `json:"phone_number"`
+	Label          string    `json:"label"`
+	Role           string    `json:"role"`
+	CollaboratorID string    `json:"collaborator_id"`
+	Active         bool      `json:"active"`
+	SyncPending    bool      `json:"sync_pending"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type AlertSent struct {
 	Key    string    `json:"key"`
 	SentAt time.Time `json:"sent_at"`
 	TTL    int64     `json:"ttl"`
+}
+
+type AccessProfile struct {
+	Phone          string
+	Role           string
+	CollaboratorID string
+	RDStationID    string
+	TeamRDUserIDs  []string
 }

@@ -79,8 +79,14 @@ func (s *ResourceService) UpsertCollaborator(ctx context.Context, c domain.Colla
 	c.Name = strings.TrimSpace(c.Name)
 	c.Email = strings.ToLower(strings.TrimSpace(c.Email))
 	c.WhatsApp = normalizeE164(c.WhatsApp)
+	c.Role = normalizeRole(c.Role)
+	c.RDStationID = strings.TrimSpace(c.RDStationID)
+	c.SupervisorID = strings.TrimSpace(c.SupervisorID)
 	if c.Name == "" || c.Email == "" || !strings.Contains(c.Email, "@") || !phoneRegex.MatchString(c.WhatsApp) {
 		return domain.Collaborator{}, ErrInvalidInput
+	}
+	if c.Role == "" {
+		c.Role = "seller"
 	}
 	now := time.Now().UTC()
 	if c.ID == "" {
@@ -200,8 +206,13 @@ func (s *ResourceService) ListAllowlist(ctx context.Context, activeOnly bool) ([
 func (s *ResourceService) UpsertAllowlist(ctx context.Context, e domain.AllowlistEntry) (domain.AllowlistEntry, error) {
 	e.PhoneNumber = normalizeE164(e.PhoneNumber)
 	e.Label = strings.TrimSpace(e.Label)
+	e.Role = normalizeRole(e.Role)
+	e.CollaboratorID = strings.TrimSpace(e.CollaboratorID)
 	if !phoneRegex.MatchString(e.PhoneNumber) {
 		return domain.AllowlistEntry{}, ErrInvalidInput
+	}
+	if e.Role == "" {
+		e.Role = "seller"
 	}
 	now := time.Now().UTC()
 	if e.ID == "" {
@@ -273,6 +284,60 @@ func (s *ResourceService) IsAllowed(ctx context.Context, phone string) (bool, er
 	return entry.Active, nil
 }
 
+func (s *ResourceService) AccessProfile(ctx context.Context, phone string) (domain.AccessProfile, error) {
+	entry, err := s.store.FindAllowlistByPhone(ctx, phone)
+	if err != nil {
+		return domain.AccessProfile{}, err
+	}
+	if entry.ID == "" || !entry.Active {
+		return domain.AccessProfile{}, nil
+	}
+
+	profile := domain.AccessProfile{
+		Phone:          normalizeE164(phone),
+		Role:           normalizeRole(entry.Role),
+		CollaboratorID: entry.CollaboratorID,
+	}
+	if profile.Role == "" {
+		profile.Role = "seller"
+	}
+
+	collaborators, err := s.store.ListCollaborators(ctx, false)
+	if err != nil {
+		return domain.AccessProfile{}, err
+	}
+
+	var current domain.Collaborator
+	for _, c := range collaborators {
+		if entry.CollaboratorID != "" && c.ID == entry.CollaboratorID {
+			current = c
+			break
+		}
+		if entry.CollaboratorID == "" && normalizeE164(c.WhatsApp) == normalizeE164(phone) {
+			current = c
+			break
+		}
+	}
+	if current.ID != "" {
+		profile.CollaboratorID = current.ID
+		profile.RDStationID = strings.TrimSpace(current.RDStationID)
+		if current.Role != "" {
+			profile.Role = normalizeRole(current.Role)
+		}
+	}
+
+	if profile.Role == "supervisor" && profile.CollaboratorID != "" {
+		for _, c := range collaborators {
+			if !c.Active || c.SupervisorID != profile.CollaboratorID || strings.TrimSpace(c.RDStationID) == "" {
+				continue
+			}
+			profile.TeamRDUserIDs = append(profile.TeamRDUserIDs, strings.TrimSpace(c.RDStationID))
+		}
+	}
+
+	return profile, nil
+}
+
 func normalizeE164(phone string) string {
 	phone = strings.TrimSpace(phone)
 	phone = strings.TrimPrefix(phone, "+")
@@ -301,4 +366,17 @@ func uniqueNonEmptyStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func normalizeRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "director", "diretoria", "diretor", "the god", "god":
+		return "director"
+	case "supervisor":
+		return "supervisor"
+	case "seller", "vendedor", "pj", "pf":
+		return "seller"
+	default:
+		return ""
+	}
 }

@@ -27,6 +27,10 @@ type AllowChecker interface {
 	IsAllowed(ctx context.Context, phone string) (bool, error)
 }
 
+type AccessProfiler interface {
+	AccessProfile(ctx context.Context, phone string) (domain.AccessProfile, error)
+}
+
 type Handler struct {
 	conv           *convSvc.Service
 	nlpSvc         nlp.ServiceInterface
@@ -35,6 +39,7 @@ type Handler struct {
 	logger         *slog.Logger
 	allowedNumbers map[string]struct{}
 	allowChecker   AllowChecker
+	accessProfiler AccessProfiler
 	pendingMu      sync.Mutex
 	pendingDeals   map[string]pendingDealSelection
 	pendingListsMu sync.Mutex
@@ -59,6 +64,9 @@ func New(conv *convSvc.Service, nlpSvc nlp.ServiceInterface, router *intentRoute
 
 func (h *Handler) SetAllowChecker(checker AllowChecker) {
 	h.allowChecker = checker
+	if profiler, ok := checker.(AccessProfiler); ok {
+		h.accessProfiler = profiler
+	}
 }
 
 func (h *Handler) RegisterRoutes(r gin.IRouter) {
@@ -122,6 +130,16 @@ func (h *Handler) processTextMessage(ctx context.Context, inbound inboundTextMes
 		return fmt.Errorf("get history: %w", err)
 	}
 
+	if isGreeting(msg) {
+		reply := GreetingResponse()
+		_ = h.conv.SaveUserMessage(ctx, session.ID, msg, "greeting")
+		_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
+		if err := h.sender.SendTextMessage(ctx, inbound.From, reply); err != nil {
+			return fmt.Errorf("send evolution greeting reply: %w", err)
+		}
+		return nil
+	}
+
 	if reply, ok, err := h.handlePendingSelection(ctx, session.ID, msg); ok || err != nil {
 		if err != nil {
 			return err
@@ -153,11 +171,16 @@ func (h *Handler) processTextMessage(ctx context.Context, inbound inboundTextMes
 		h.logger.WarnContext(ctx, "nlp parse intent failed", "session_id", session.ID, "message_id", inbound.ID, "error", err)
 		intent = domain.Intent{Name: domain.IntentUnknown, RawText: msg}
 	}
+	if isDeleteRequest(msg) {
+		intent.Name = domain.IntentDeleteDeal
+		intent.RawText = msg
+	}
 
 	_ = h.conv.SaveUserMessage(ctx, session.ID, msg, string(intent.Name))
 	// A new NLP-processed message clears any pending list selection.
 	h.clearPendingList(session.ID)
-	reply := h.buildReply(ctx, session.ID, intent)
+	actor := h.actorForPhone(ctx, from)
+	reply := h.buildReply(ctx, session.ID, intent, actor)
 	_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
 
 	if err := h.sender.SendTextMessage(ctx, inbound.From, reply); err != nil {
@@ -190,12 +213,12 @@ func (h *Handler) isAllowed(ctx context.Context, number string) bool {
 	return ok
 }
 
-func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domain.Intent) string {
+func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domain.Intent, actor intentRouter.Actor) string {
 	if intent.Name == domain.IntentUnknown {
 		return nlp.FallbackResponse()
 	}
 
-	result, routeErr := h.router.Route(ctx, intent)
+	result, routeErr := h.router.RouteForActor(ctx, intent, actor)
 	if routeErr != nil {
 		// If disambiguation is needed, try auto-resolving using the active deal.
 		var multiErr *rdSvc.MultipleDealsError
@@ -322,6 +345,13 @@ func (h *Handler) getActiveDeal(sessionID string) (domain.Deal, bool) {
 }
 
 func (h *Handler) handleRouteError(err error, sessionID string, intent domain.Intent) string {
+	if errors.Is(err, intentRouter.ErrPermissionDenied) {
+		return "Voce nao tem permissao para executar essa acao. Vendedores acessam apenas os proprios negocios, supervisores acessam os proprios negocios e os da equipe, e exclusoes ficam restritas a diretoria pelo fluxo de aprovacao do RD Station."
+	}
+	if errors.Is(err, intentRouter.ErrDeletionRequiresApproval) {
+		return "A exclusao de negociacoes deve ser feita pelo fluxo de aprovacao do RD Station. Como diretoria, voce pode solicitar a exclusao por la para que o processo registre a aprovacao corretamente."
+	}
+
 	var multiErr *rdSvc.MultipleDealsError
 	if errors.As(err, &multiErr) {
 		h.rememberDealSelection(sessionID, intent, multiErr.Deals)
@@ -354,6 +384,48 @@ func (h *Handler) handleRouteError(err error, sessionID string, intent domain.In
 
 	h.logger.Warn("route error", "intent", string(intent.Name), "error", err)
 	return nlp.ErrorResponse("RD Station")
+}
+
+func (h *Handler) actorForPhone(ctx context.Context, phone string) intentRouter.Actor {
+	if h.accessProfiler == nil {
+		return intentRouter.Actor{Role: "director"}
+	}
+	profile, err := h.accessProfiler.AccessProfile(ctx, phone)
+	if err != nil {
+		h.logger.WarnContext(ctx, "access profile lookup failed", "from", maskPhone(phone), "error", err)
+		return intentRouter.Actor{Role: "seller"}
+	}
+	return intentRouter.Actor{Role: profile.Role, RDStationID: profile.RDStationID, TeamRDUserIDs: profile.TeamRDUserIDs}
+}
+
+func isGreeting(msg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(msg))
+	normalized = strings.Trim(normalized, "!.? ")
+	return normalized == "oi"
+}
+
+func isDeleteRequest(msg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(msg))
+	return strings.Contains(normalized, "apagar") || strings.Contains(normalized, "excluir") || strings.Contains(normalized, "deletar")
+}
+
+func GreetingResponse() string {
+	return `Olá! Eu sou a Sil, a inteligência artificial da Silmax.
+
+Comigo, você poderá acompanhar tudo o que precisar sobre seus negócios em andamento junto à Silmax. Estarei pronta para ajudar com informações sobre negociações, clientes que precisam de contato, relatórios, status de processos e muito mais.
+
+O acesso às funcionalidades da Sil será realizado exclusivamente através do número de telefone que está recebendo esta mensagem. Outros números não terão acesso aos seus recursos e informações.
+
+No momento, ainda estou em fase de implantação e minhas funcionalidades estão sendo preparadas para oferecer a melhor experiência possível.
+
+Salve meu número e, assim que eu estiver pronta para te ajudar, avisarei você!
+
+Nos vemos em breve!
+
+Sil 😉
+
+Silmax
+Excellence and Quality`
 }
 
 func (h *Handler) rememberDealSelection(sessionID string, intent domain.Intent, deals []domain.Deal) {

@@ -92,7 +92,7 @@ func (s *DynamoDBStore) GetCollaborator(ctx context.Context, id string) (domain.
 }
 
 func (s *DynamoDBStore) SaveCollaborator(ctx context.Context, c domain.Collaborator) error {
-	item := collaboratorItem{PK: adminPKCollaborators, SK: c.ID, ID: c.ID, Name: c.Name, Email: strings.ToLower(c.Email), WhatsApp: c.WhatsApp, Active: c.Active, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, EntityType: "admin_collaborator"}
+	item := collaboratorItem{PK: adminPKCollaborators, SK: c.ID, ID: c.ID, Name: c.Name, Email: strings.ToLower(c.Email), WhatsApp: c.WhatsApp, Role: c.Role, RDStationID: c.RDStationID, SupervisorID: c.SupervisorID, Active: c.Active, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, EntityType: "admin_collaborator"}
 	return s.put(ctx, item)
 }
 
@@ -162,7 +162,7 @@ func (s *DynamoDBStore) GetAllowlistEntry(ctx context.Context, id string) (domai
 }
 
 func (s *DynamoDBStore) SaveAllowlistEntry(ctx context.Context, e domain.AllowlistEntry) error {
-	item := allowlistItem{PK: adminPKAllowlist, SK: e.ID, ID: e.ID, PhoneNumber: e.PhoneNumber, Label: e.Label, Active: e.Active, SyncPending: e.SyncPending, CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt, EntityType: "admin_allowlist"}
+	item := allowlistItem{PK: adminPKAllowlist, SK: e.ID, ID: e.ID, PhoneNumber: e.PhoneNumber, Label: e.Label, Role: e.Role, CollaboratorID: e.CollaboratorID, Active: e.Active, SyncPending: e.SyncPending, CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt, EntityType: "admin_allowlist"}
 	return s.put(ctx, item)
 }
 
@@ -268,20 +268,23 @@ type adminConfigItem struct {
 }
 
 type collaboratorItem struct {
-	PK         string    `dynamodbav:"PK"`
-	SK         string    `dynamodbav:"SK"`
-	ID         string    `dynamodbav:"id"`
-	Name       string    `dynamodbav:"name"`
-	Email      string    `dynamodbav:"email"`
-	WhatsApp   string    `dynamodbav:"whatsapp"`
-	Active     bool      `dynamodbav:"active"`
-	CreatedAt  time.Time `dynamodbav:"created_at"`
-	UpdatedAt  time.Time `dynamodbav:"updated_at"`
-	EntityType string    `dynamodbav:"entity_type"`
+	PK           string    `dynamodbav:"PK"`
+	SK           string    `dynamodbav:"SK"`
+	ID           string    `dynamodbav:"id"`
+	Name         string    `dynamodbav:"name"`
+	Email        string    `dynamodbav:"email"`
+	WhatsApp     string    `dynamodbav:"whatsapp"`
+	Role         string    `dynamodbav:"role"`
+	RDStationID  string    `dynamodbav:"rdstation_id"`
+	SupervisorID string    `dynamodbav:"supervisor_id"`
+	Active       bool      `dynamodbav:"active"`
+	CreatedAt    time.Time `dynamodbav:"created_at"`
+	UpdatedAt    time.Time `dynamodbav:"updated_at"`
+	EntityType   string    `dynamodbav:"entity_type"`
 }
 
 func (i collaboratorItem) domain() domain.Collaborator {
-	return domain.Collaborator{ID: i.ID, Name: i.Name, Email: i.Email, WhatsApp: i.WhatsApp, Active: i.Active, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt}
+	return domain.Collaborator{ID: i.ID, Name: i.Name, Email: i.Email, WhatsApp: i.WhatsApp, Role: i.Role, RDStationID: i.RDStationID, SupervisorID: i.SupervisorID, Active: i.Active, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt}
 }
 
 type alertItem struct {
@@ -307,20 +310,22 @@ func (i alertItem) domain() domain.Alert {
 }
 
 type allowlistItem struct {
-	PK          string    `dynamodbav:"PK"`
-	SK          string    `dynamodbav:"SK"`
-	ID          string    `dynamodbav:"id"`
-	PhoneNumber string    `dynamodbav:"phone_number"`
-	Label       string    `dynamodbav:"label"`
-	Active      bool      `dynamodbav:"active"`
-	SyncPending bool      `dynamodbav:"sync_pending"`
-	CreatedAt   time.Time `dynamodbav:"created_at"`
-	UpdatedAt   time.Time `dynamodbav:"updated_at"`
-	EntityType  string    `dynamodbav:"entity_type"`
+	PK             string    `dynamodbav:"PK"`
+	SK             string    `dynamodbav:"SK"`
+	ID             string    `dynamodbav:"id"`
+	PhoneNumber    string    `dynamodbav:"phone_number"`
+	Label          string    `dynamodbav:"label"`
+	Role           string    `dynamodbav:"role"`
+	CollaboratorID string    `dynamodbav:"collaborator_id"`
+	Active         bool      `dynamodbav:"active"`
+	SyncPending    bool      `dynamodbav:"sync_pending"`
+	CreatedAt      time.Time `dynamodbav:"created_at"`
+	UpdatedAt      time.Time `dynamodbav:"updated_at"`
+	EntityType     string    `dynamodbav:"entity_type"`
 }
 
 func (i allowlistItem) domain() domain.AllowlistEntry {
-	return domain.AllowlistEntry{ID: i.ID, PhoneNumber: i.PhoneNumber, Label: i.Label, Active: i.Active, SyncPending: i.SyncPending, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt}
+	return domain.AllowlistEntry{ID: i.ID, PhoneNumber: i.PhoneNumber, Label: i.Label, Role: i.Role, CollaboratorID: i.CollaboratorID, Active: i.Active, SyncPending: i.SyncPending, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt}
 }
 
 type alertSentItem struct {
