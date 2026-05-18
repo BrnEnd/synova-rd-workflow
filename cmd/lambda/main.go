@@ -11,14 +11,20 @@ import (
 	ginadapter "github.com/awslabs/aws-lambda-go-api-proxy/gin"
 	"github.com/gin-gonic/gin"
 	"synova-rd-workflow/config"
+	evoClient "synova-rd-workflow/internal/client/evolution"
 	"synova-rd-workflow/internal/client/openai"
 	rdClient "synova-rd-workflow/internal/client/rdstation"
 	waClient "synova-rd-workflow/internal/client/whatsapp"
+	adminHandler "synova-rd-workflow/internal/handler/admin"
+	evoHandler "synova-rd-workflow/internal/handler/evolution"
 	waHandler "synova-rd-workflow/internal/handler/whatsapp"
+	adminMiddleware "synova-rd-workflow/internal/middleware"
+	adminSvc "synova-rd-workflow/internal/service/admin"
 	convSvc "synova-rd-workflow/internal/service/conversation"
 	intentRouter "synova-rd-workflow/internal/service/intent_router"
 	"synova-rd-workflow/internal/service/nlp"
 	rdSvc "synova-rd-workflow/internal/service/rdstation"
+	adminStore "synova-rd-workflow/internal/store/admin"
 	convStore "synova-rd-workflow/internal/store/conversation"
 )
 
@@ -39,11 +45,16 @@ func main() {
 		panic(err)
 	}
 
-	router := buildRouter(cfg, logger, store)
+	adminData, err := adminStore.NewDynamoDBStore(ctx, cfg.AWSRegion, cfg.DynamoDBEndpoint, cfg.DynamoDBTableName)
+	if err != nil {
+		panic(err)
+	}
+
+	router := buildRouter(cfg, logger, store, adminData)
 	lambda.Start(ginadapter.NewV2(router).ProxyWithContext)
 }
 
-func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.DynamoDBStore) *gin.Engine {
+func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.DynamoDBStore, adminData *adminStore.DynamoDBStore) *gin.Engine {
 	if strings.ToUpper(cfg.LogLevel) != "DEBUG" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -56,13 +67,34 @@ func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.Dynam
 	router := intentRouter.New(rdstation)
 	whatsApp := waClient.New(cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID)
 	handler := waHandler.New(conversation, nlpService, router, whatsApp, cfg.WhatsAppVerifyToken, cfg.WhatsAppAppSecret, logger)
+	evolution := evoClient.NewWithSendDelay(cfg.EvolutionBaseURL, cfg.EvolutionAPIKey, cfg.EvolutionInstance, cfg.EvolutionSendDelay)
+	evolutionHandler := evoHandler.New(conversation, nlpService, router, evolution, logger, cfg.EvolutionAllowedNumbers)
+	adminAuth, err := adminSvc.NewAuthService(adminData, cfg.AdminEmail, cfg.AdminInitialPasswordHash, cfg.AdminJWTPrivateKey, cfg.AdminJWTPublicKey)
+	if err != nil {
+		panic(err)
+	}
+	adminResources := adminSvc.NewResourceService(adminData, evolution, rd)
+	if err := adminResources.SeedAllowlist(context.Background(), cfg.EvolutionAllowedNumbers); err != nil {
+		logger.Warn("failed to seed admin allowlist from env", "error", err)
+	}
+	handler.SetAllowChecker(adminResources)
+	evolutionHandler.SetAllowChecker(adminResources)
+	admin := adminHandler.New(adminAuth, adminResources, rd, cfg.AdminCookieSecure)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(adminMiddleware.AdminSecurityHeaders())
+	r.Use(adminMiddleware.AdminCORS(cfg.AdminOrigin))
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 	handler.RegisterRoutes(r)
+	evolutionHandler.RegisterRoutes(r)
+	adminGroup := r.Group("/admin")
+	admin.RegisterPublicRoutes(adminGroup, adminMiddleware.NewLoginRateLimiter().Middleware())
+	protectedAdmin := adminGroup.Group("")
+	protectedAdmin.Use(adminMiddleware.AdminAuth(adminAuth))
+	admin.RegisterProtectedRoutes(protectedAdmin)
 
 	return r
 }

@@ -11,9 +11,9 @@ variable "function_zip" {
 }
 
 variable "lambda_memory_size" {
-  description = "Lambda memory in MB. 128 MB keeps the function in the cheapest/free-tier friendly compute band."
+  description = "Lambda memory in MB."
   type        = number
-  default     = 128
+  default     = 512
 }
 
 variable "dynamodb_read_capacity" {
@@ -44,6 +44,7 @@ variable "whatsapp_access_token" {
   description = "Meta WhatsApp Cloud API access token."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "whatsapp_phone_number_id" {
@@ -56,12 +57,39 @@ variable "whatsapp_verify_token" {
   description = "Random token used by Meta during webhook verification."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "whatsapp_app_secret" {
   description = "Meta app secret used to verify X-Hub-Signature-256."
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+variable "evolution_base_url" {
+  description = "Public Evolution API base URL reachable by Lambda, e.g. https://evolution.example.com."
+  type        = string
+  default     = ""
+}
+
+variable "evolution_api_key" {
+  description = "Evolution API key."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "evolution_instance" {
+  description = "Evolution API instance name used by the bot."
+  type        = string
+  default     = "synova"
+}
+
+variable "evolution_allowed_numbers" {
+  description = "Comma-separated E.164 numbers initially allowed to use the bot."
+  type        = string
+  default     = ""
 }
 
 variable "openai_api_key" {
@@ -92,4 +120,34 @@ variable "nlp_context_window" {
   description = "Number of previous messages sent to the NLP service."
   type        = number
   default     = 10
+}
+
+variable "admin_email" {
+  description = "Initial admin login e-mail."
+  type        = string
+  default     = "admin@synova.local"
+}
+
+variable "admin_origin" {
+  description = "Allowed admin frontend origin for CORS."
+  type        = string
+  default     = "*"
+}
+
+variable "admin_cookie_secure" {
+  description = "Whether the admin session cookie requires HTTPS."
+  type        = bool
+  default     = true
+}
+
+variable "alert_check_interval" {
+  description = "Alert scheduler interval. Lambda deployments do not run persistent schedulers, but the value is kept for config compatibility."
+  type        = string
+  default     = "30m"
+}
+
+variable "evolution_send_delay" {
+  description = "Delay between Evolution API message sends."
+  type        = string
+  default     = "10s"
 }

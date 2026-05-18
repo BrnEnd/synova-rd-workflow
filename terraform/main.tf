@@ -18,6 +18,30 @@ locals {
   table_name     = "synova-rd-workflow-conversations"
   lambda_zip     = abspath("${path.module}/${var.function_zip}")
   lambda_log_arn = "${aws_cloudwatch_log_group.lambda.arn}:*"
+  lambda_environment = merge(
+    {
+      OPENAI_API_KEY       = var.openai_api_key
+      OPENAI_MODEL         = var.openai_model
+      RDSTATION_TOKEN      = var.rdstation_token
+      DYNAMODB_TABLE_NAME  = aws_dynamodb_table.conversations.name
+      AWS_REGION_APP       = var.aws_region
+      LOG_LEVEL            = var.log_level
+      NLP_CONTEXT_WINDOW   = tostring(var.nlp_context_window)
+      ADMIN_EMAIL          = var.admin_email
+      ADMIN_ORIGIN         = var.admin_origin
+      ADMIN_COOKIE_SECURE  = tostring(var.admin_cookie_secure)
+      ALERT_CHECK_INTERVAL = var.alert_check_interval
+      EVOLUTION_SEND_DELAY = var.evolution_send_delay
+      EVOLUTION_INSTANCE   = var.evolution_instance
+    },
+    var.whatsapp_access_token != "" ? { WHATSAPP_ACCESS_TOKEN = var.whatsapp_access_token } : {},
+    var.whatsapp_phone_number_id != "" ? { WHATSAPP_PHONE_NUMBER_ID = var.whatsapp_phone_number_id } : {},
+    var.whatsapp_verify_token != "" ? { WHATSAPP_VERIFY_TOKEN = var.whatsapp_verify_token } : {},
+    var.whatsapp_app_secret != "" ? { WHATSAPP_APP_SECRET = var.whatsapp_app_secret } : {},
+    var.evolution_base_url != "" ? { EVOLUTION_BASE_URL = var.evolution_base_url } : {},
+    var.evolution_api_key != "" ? { EVOLUTION_API_KEY = var.evolution_api_key } : {},
+    var.evolution_allowed_numbers != "" ? { EVOLUTION_ALLOWED_NUMBERS = var.evolution_allowed_numbers } : {}
+  )
 }
 
 resource "aws_dynamodb_table" "conversations" {
@@ -104,19 +128,7 @@ resource "aws_lambda_function" "workflow" {
   role             = aws_iam_role.lambda.arn
 
   environment {
-    variables = {
-      WHATSAPP_ACCESS_TOKEN    = var.whatsapp_access_token
-      WHATSAPP_PHONE_NUMBER_ID = var.whatsapp_phone_number_id
-      WHATSAPP_VERIFY_TOKEN    = var.whatsapp_verify_token
-      WHATSAPP_APP_SECRET      = var.whatsapp_app_secret
-      OPENAI_API_KEY           = var.openai_api_key
-      OPENAI_MODEL             = var.openai_model
-      RDSTATION_TOKEN          = var.rdstation_token
-      DYNAMODB_TABLE_NAME      = aws_dynamodb_table.conversations.name
-      AWS_REGION_APP           = var.aws_region
-      LOG_LEVEL                = var.log_level
-      NLP_CONTEXT_WINDOW       = tostring(var.nlp_context_window)
-    }
+    variables = local.lambda_environment
   }
 
   depends_on = [
