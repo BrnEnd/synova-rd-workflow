@@ -62,6 +62,38 @@ func TestGetContacts_4xxError_NotRetried(t *testing.T) {
 	}
 }
 
+func TestGetDeals_FiltersByOwnerName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deals" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		resp := rdClient.DealsListResponse{
+			Deals: []rdClient.DealResponse{
+				{ID: "d1", Name: "SILICA", DealOwner: rdClient.DealUserResponse{Name: "Glauco de Oliveira"}},
+				{ID: "d2", Name: "PORTIFOLIO", DealOwner: rdClient.DealUserResponse{Name: "Renato Silva"}},
+			},
+			Total: 2,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	client := rdClient.NewWithBaseURL("key", srv.URL)
+	svc := rdSvc.New(client)
+
+	deals, err := svc.GetDeals(context.Background(), rdSvc.GetDealsParams{OwnerName: "Glauco"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deals) != 1 {
+		t.Fatalf("expected 1 deal, got %d", len(deals))
+	}
+	if deals[0].Owner.Name != "Glauco de Oliveira" {
+		t.Errorf("expected Glauco de Oliveira, got %s", deals[0].Owner.Name)
+	}
+}
+
 func TestMoveDealStage_MultipleDeals_ReturnsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

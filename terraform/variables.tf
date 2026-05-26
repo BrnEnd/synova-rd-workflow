@@ -168,7 +168,7 @@ variable "alert_check_interval" {
 variable "evolution_send_delay" {
   description = "Delay between Evolution API message sends."
   type        = string
-  default     = "10s"
+  default     = "0s"
 }
 
 variable "admin_jwt_private_key" {

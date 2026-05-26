@@ -175,6 +175,7 @@ func (h *Handler) processTextMessage(ctx context.Context, inbound inboundTextMes
 		intent.Name = domain.IntentDeleteDeal
 		intent.RawText = msg
 	}
+	normalizeDealOwnerIntent(&intent)
 
 	_ = h.conv.SaveUserMessage(ctx, session.ID, msg, string(intent.Name))
 	// A new NLP-processed message clears any pending list selection.
@@ -407,6 +408,47 @@ func isGreeting(msg string) bool {
 func isDeleteRequest(msg string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(msg))
 	return strings.Contains(normalized, "apagar") || strings.Contains(normalized, "excluir") || strings.Contains(normalized, "deletar")
+}
+
+func normalizeDealOwnerIntent(intent *domain.Intent) {
+	if intent.Name != domain.IntentGetDeals || intent.Parameters == nil {
+		return
+	}
+	if strings.TrimSpace(intent.Parameters["owner_name"]) != "" {
+		return
+	}
+	raw := normalizeIntentText(intent.RawText)
+	if !(strings.Contains(raw, " responsavel") ||
+		strings.Contains(raw, " responsaveis") ||
+		strings.Contains(raw, " vendedor") ||
+		strings.Contains(raw, " dono") ||
+		strings.Contains(raw, " do ") ||
+		strings.Contains(raw, " da ") ||
+		strings.Contains(raw, " atribuida") ||
+		strings.Contains(raw, " atribuidas")) {
+		return
+	}
+	if name := strings.TrimSpace(intent.Parameters["name"]); name != "" {
+		intent.Parameters["owner_name"] = name
+		delete(intent.Parameters, "name")
+	} else if name := strings.TrimSpace(intent.Parameters["deal_name"]); name != "" {
+		intent.Parameters["owner_name"] = name
+		delete(intent.Parameters, "deal_name")
+	}
+}
+
+func normalizeIntentText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer(
+		"á", "a", "à", "a", "ã", "a", "â", "a",
+		"é", "e", "ê", "e",
+		"í", "i",
+		"ó", "o", "õ", "o", "ô", "o",
+		"ú", "u",
+		"ç", "c",
+		";", " ",
+	).Replace(value)
+	return " " + strings.Join(strings.Fields(value), " ") + " "
 }
 
 func GreetingResponse() string {

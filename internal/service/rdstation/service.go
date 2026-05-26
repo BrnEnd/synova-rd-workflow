@@ -30,6 +30,7 @@ type GetDealsParams struct {
 	Name           string
 	Stage          string
 	Status         string // "open", "won", "lost"
+	OwnerName      string
 	AllowedOwnerID map[string]struct{}
 }
 
@@ -176,7 +177,9 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 		return nil, err
 	}
 
-	return filterDealsByOwner(mapDeals(resp), params.AllowedOwnerID), nil
+	deals := filterDealsByOwner(mapDeals(resp), params.AllowedOwnerID)
+	deals = filterDealsByOwnerName(deals, params.OwnerName)
+	return deals, nil
 }
 
 // CreateDeal creates a new deal in RD Station.
@@ -547,6 +550,35 @@ func filterDealsByOwner(deals []domain.Deal, allowedOwnerID map[string]struct{})
 		}
 	}
 	return out
+}
+
+func filterDealsByOwnerName(deals []domain.Deal, ownerName string) []domain.Deal {
+	ownerName = normalizeSearchText(ownerName)
+	if ownerName == "" {
+		return deals
+	}
+	out := make([]domain.Deal, 0, len(deals))
+	for _, deal := range deals {
+		name := normalizeSearchText(deal.Owner.Name)
+		email := normalizeSearchText(deal.Owner.Email)
+		if strings.Contains(name, ownerName) || strings.Contains(ownerName, name) || strings.Contains(email, ownerName) {
+			out = append(out, deal)
+		}
+	}
+	return out
+}
+
+func normalizeSearchText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer(
+		"á", "a", "à", "a", "ã", "a", "â", "a",
+		"é", "e", "ê", "e",
+		"í", "i",
+		"ó", "o", "õ", "o", "ô", "o",
+		"ú", "u",
+		"ç", "c",
+	).Replace(value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func parseRDTime(s string) time.Time {

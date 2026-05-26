@@ -54,6 +54,7 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 			Name:           p["name"],
 			Stage:          p["stage"],
 			Status:         p["status"],
+			OwnerName:      p["owner_name"],
 			AllowedOwnerID: owners,
 		})
 

@@ -155,7 +155,7 @@ resource "aws_lambda_function" "workflow" {
   handler          = "bootstrap"
   runtime          = "provided.al2023"
   architectures    = ["arm64"]
-  timeout          = 15
+  timeout          = 30
   memory_size      = var.lambda_memory_size
   role             = aws_iam_role.lambda.arn
 

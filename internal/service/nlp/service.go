@@ -21,7 +21,7 @@ Sempre use a ferramenta "identify_intent" para retornar a intenção estruturada
 Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 
 - get_contacts   → parâmetros opcionais: "name", "email", "phone"
-- get_deals      → parâmetros opcionais: "name", "stage", "status" (status: "open", "won" ou "lost")
+- get_deals      → parâmetros opcionais: "name", "stage", "status" (status: "open", "won" ou "lost"), "owner_name" (nome do responsável/dono/vendedor)
 - get_deal       → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação específica mencionada pelo usuário)
 - get_deal_contacts → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação)
 - create_contact → parâmetros: "name" (obrigatório), "email", "phone", "company" (opcionais)
@@ -35,6 +35,7 @@ Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 
 REGRAS CRÍTICAS:
 - Para get_deal e get_deal_contacts: sempre use a chave "deal_name" com o nome da negociação
+- Para get_deals: quando o usuário pedir negociações "do", "da", "responsável", "dono", "vendedor" ou "atribuídas a" uma pessoa, use "owner_name"; não use "name" para o nome da pessoa
 - Para create_deal: sempre use a chave "name" com o nome da nova negociação
 - Para update_contact: "contact_name" é o nome do contato a editar; "field" é o campo (email/phone/name); "value" é o novo conteúdo
 - Para associate_contact_to_deal: "deal_name" é a negociação destino; "contact_name" é o contato a associar
@@ -94,6 +95,10 @@ var intentTool = openaiClient.Tool{
 							"type":        "string",
 							"enum":        []string{"open", "won", "lost"},
 							"description": "Status da negociação para filtrar (get_deals)",
+						},
+						"owner_name": map[string]interface{}{
+							"type":        "string",
+							"description": "Nome do responsável/dono/vendedor da negociação. Usar em get_deals quando o usuário pedir negociações de uma pessoa, ex: Glauco ou Glauco de Oliveira.",
 						},
 						"contact_name": map[string]interface{}{
 							"type":        "string",
