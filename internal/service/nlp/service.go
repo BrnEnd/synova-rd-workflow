@@ -31,6 +31,8 @@ Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 - delete_deal    -> parametro OBRIGATORIO: "deal_name" (quando o usuario pedir para apagar/excluir/deletar uma negociacao)
 - update_contact → parâmetros: "contact_name" (OBRIGATÓRIO — nome do contato), "field" (OBRIGATÓRIO — ex: "email", "phone", "name"), "value" (OBRIGATÓRIO — novo valor)
 - associate_contact_to_deal → parâmetros: "deal_name" (OBRIGATÓRIO), "contact_name" (OBRIGATÓRIO)
+- get_deal_activities → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação cujas anotações serão consultadas)
+- create_deal_activity → parâmetros: "deal_name" (OBRIGATÓRIO — negociação onde registrar), "text" (OBRIGATÓRIO — conteúdo da anotação)
 - unknown        → quando não for possível identificar a intenção
 
 REGRAS CRÍTICAS:
@@ -39,6 +41,8 @@ REGRAS CRÍTICAS:
 - Para create_deal: sempre use a chave "name" com o nome da nova negociação
 - Para update_contact: "contact_name" é o nome do contato a editar; "field" é o campo (email/phone/name); "value" é o novo conteúdo
 - Para associate_contact_to_deal: "deal_name" é a negociação destino; "contact_name" é o contato a associar
+- Para get_deal_activities: sempre use "deal_name" com o nome da negociação cujas anotações serão listadas
+- Para create_deal_activity: extraia exatamente o que o usuário quer registrar como "text"; o responsável pela anotação é determinado automaticamente pelo sistema
 - Nunca deixe parâmetros obrigatórios vazios — se o usuário mencionou um nome, extraia-o
 - Use o histórico da conversa para inferir nomes de negociações ou contatos quando o usuário usar pronomes como "essa", "esse", "desse"
 - Responda apenas com a chamada de ferramenta — nunca com texto livre nesta etapa.`
@@ -56,7 +60,8 @@ var intentTool = openaiClient.Tool{
 					"enum": []string{
 						"get_contacts", "get_deals", "get_deal", "get_deal_contacts",
 						"create_contact", "create_deal", "update_deal", "move_deal_stage",
-						"delete_deal", "update_contact", "associate_contact_to_deal", "unknown",
+						"delete_deal", "update_contact", "associate_contact_to_deal",
+						"get_deal_activities", "create_deal_activity", "unknown",
 					},
 					"description": "A intenção identificada na mensagem",
 				},
@@ -69,7 +74,7 @@ var intentTool = openaiClient.Tool{
 						},
 						"deal_name": map[string]interface{}{
 							"type":        "string",
-							"description": "Nome de uma negociação EXISTENTE no CRM. Usar em: get_deal, get_deal_contacts, update_deal, move_deal_stage.",
+							"description": "Nome de uma negociação EXISTENTE no CRM. Usar em: get_deal, get_deal_contacts, update_deal, move_deal_stage, get_deal_activities, create_deal_activity.",
 						},
 						"email": map[string]interface{}{
 							"type":        "string",
@@ -111,6 +116,10 @@ var intentTool = openaiClient.Tool{
 						"value": map[string]interface{}{
 							"type":        "string",
 							"description": "Novo valor para o campo informado em update_deal",
+						},
+						"text": map[string]interface{}{
+							"type":        "string",
+							"description": "Conteúdo textual da anotação a registrar na negociação (create_deal_activity)",
 						},
 					},
 					"additionalProperties": false,

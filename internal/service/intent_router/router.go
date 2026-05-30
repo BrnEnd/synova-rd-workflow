@@ -77,6 +77,7 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 			Name:        p["name"],
 			ContactName: p["contact_name"],
 			Stage:       p["stage"],
+			UserID:      actor.RDStationID,
 		})
 
 	case domain.IntentUpdateDeal:
@@ -106,6 +107,17 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 	case domain.IntentAssociateContactToDeal:
 		return r.rdstation.AssociateContactToDeal(ctx, p["deal_name"], p["contact_name"])
 
+	case domain.IntentGetDealActivities:
+		return r.rdstation.GetDealActivities(ctx, p["deal_name"], owners)
+
+	case domain.IntentCreateDealActivity:
+		return r.rdstation.CreateDealActivity(ctx, rdSvc.CreateDealActivityParams{
+			DealName:       p["deal_name"],
+			UserID:         actor.RDStationID,
+			Text:           p["text"],
+			AllowedOwnerID: owners,
+		})
+
 	case domain.IntentUnknown:
 		return nil, nil
 
@@ -123,13 +135,17 @@ func (r *Router) ResolveDealSelection(ctx context.Context, intent domain.Intent,
 	case domain.IntentGetDealContacts:
 		return r.rdstation.GetDealContactsByID(ctx, deal.ID)
 
+	case domain.IntentGetDealActivities:
+		return r.rdstation.GetDealActivitiesByID(ctx, deal.ID)
+
 	default:
 		return r.rdstation.GetDealByID(ctx, deal.ID)
 	}
 }
 
 func allowedOwnerIDs(actor Actor) map[string]struct{} {
-	if normalizeRole(actor.Role) == "director" {
+	role := normalizeRole(actor.Role)
+	if role == "director" || role == "supervisor" {
 		return nil
 	}
 	ids := append([]string{actor.RDStationID}, actor.TeamRDUserIDs...)

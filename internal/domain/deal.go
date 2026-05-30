@@ -25,3 +25,10 @@ type Stage struct {
 	ID   string
 	Name string
 }
+
+// Activity represents a manual annotation registered in a deal.
+type Activity struct {
+	ID   string
+	Text string
+	Date string
+}
