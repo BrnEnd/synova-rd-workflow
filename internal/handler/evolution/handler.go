@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"synova-rd-workflow/internal/domain"
+	adminSvc "synova-rd-workflow/internal/service/admin"
 	convSvc "synova-rd-workflow/internal/service/conversation"
 	intentRouter "synova-rd-workflow/internal/service/intent_router"
 	"synova-rd-workflow/internal/service/nlp"
@@ -36,6 +37,10 @@ type AccessProfiler interface {
 	AccessProfile(ctx context.Context, phone string) (domain.AccessProfile, error)
 }
 
+type ScheduledTasksProvider interface {
+	ListScheduledTasks(ctx context.Context) ([]adminSvc.ScheduledTaskSummary, error)
+}
+
 type Handler struct {
 	conv            *convSvc.Service
 	nlpSvc          nlp.ServiceInterface
@@ -46,12 +51,15 @@ type Handler struct {
 	allowedNumbers  map[string]struct{}
 	allowChecker    AllowChecker
 	accessProfiler  AccessProfiler
+	tasksProvider   ScheduledTasksProvider
 	pendingMu       sync.Mutex
 	pendingDeals    map[string]pendingDealSelection
 	pendingListsMu  sync.Mutex
 	pendingLists    map[string][]domain.Deal
 	pendingCreateMu sync.Mutex
 	pendingCreates  map[string]pendingCreateDeal
+	pendingTaskMu   sync.Mutex
+	pendingTasks    map[string]pendingScheduledTask
 	activeDealsMu   sync.Mutex
 	activeDeals     map[string]domain.Deal
 }
@@ -67,6 +75,7 @@ func New(conv *convSvc.Service, nlpSvc nlp.ServiceInterface, router *intentRoute
 		pendingDeals:   make(map[string]pendingDealSelection),
 		pendingLists:   make(map[string][]domain.Deal),
 		pendingCreates: make(map[string]pendingCreateDeal),
+		pendingTasks:   make(map[string]pendingScheduledTask),
 		activeDeals:    make(map[string]domain.Deal),
 	}
 	if fetcher, ok := sender.(MediaFetcher); ok {
@@ -79,6 +88,9 @@ func (h *Handler) SetAllowChecker(checker AllowChecker) {
 	h.allowChecker = checker
 	if profiler, ok := checker.(AccessProfiler); ok {
 		h.accessProfiler = profiler
+	}
+	if provider, ok := checker.(ScheduledTasksProvider); ok {
+		h.tasksProvider = provider
 	}
 }
 
@@ -165,7 +177,19 @@ func (h *Handler) processTextMessage(ctx context.Context, inbound inboundTextMes
 		return nil
 	}
 
-	if reply, ok, err := h.handlePendingSelection(ctx, session.ID, msg); ok || err != nil {
+	if reply, ok, err := h.handlePendingScheduledTask(ctx, session.ID, msg, h.actorForPhone(ctx, from)); ok || err != nil {
+		if err != nil {
+			return err
+		}
+		_ = h.conv.SaveUserMessage(ctx, session.ID, msg, "create_scheduled_task_pending")
+		_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
+		if err := h.sender.SendTextMessage(ctx, inbound.From, reply); err != nil {
+			return fmt.Errorf("send evolution pending task reply: %w", err)
+		}
+		return nil
+	}
+
+	if reply, ok, err := h.handlePendingSelection(ctx, session.ID, msg, h.actorForPhone(ctx, from)); ok || err != nil {
 		if err != nil {
 			return err
 		}
@@ -212,6 +236,16 @@ func (h *Handler) processTextMessage(ctx context.Context, inbound inboundTextMes
 		return nil
 	}
 
+	if intent.Name == domain.IntentCreateScheduledTask {
+		reply := h.startScheduledTaskFlow(ctx, session.ID, intent, h.actorForPhone(ctx, from))
+		_ = h.conv.SaveUserMessage(ctx, session.ID, msg, string(intent.Name))
+		_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
+		if err := h.sender.SendTextMessage(ctx, inbound.From, reply); err != nil {
+			return fmt.Errorf("send evolution create task flow reply: %w", err)
+		}
+		return nil
+	}
+
 	_ = h.conv.SaveUserMessage(ctx, session.ID, msg, string(intent.Name))
 	// A new NLP-processed message clears any pending list selection.
 	h.clearPendingList(session.ID)
@@ -253,6 +287,17 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 	if intent.Name == domain.IntentUnknown {
 		return nlp.FallbackResponse()
 	}
+	if intent.Name == domain.IntentGetScheduledTasks {
+		if h.tasksProvider == nil {
+			return "Ainda nao tenho acesso as tarefas agendadas neste ambiente."
+		}
+		tasks, err := h.tasksProvider.ListScheduledTasks(ctx)
+		if err != nil {
+			h.logger.WarnContext(ctx, "scheduled tasks summary failed", "session_id", sessionID, "error", err)
+			return nlp.ErrorResponse("consulta de tarefas agendadas")
+		}
+		return formatScheduledTasks(tasks)
+	}
 
 	result, routeErr := h.router.RouteForActor(ctx, intent, actor)
 	if routeErr != nil {
@@ -262,7 +307,7 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 			if active, ok := h.getActiveDeal(sessionID); ok {
 				for _, d := range multiErr.Deals {
 					if d.ID == active.ID {
-						autoResult, autoErr := h.router.ResolveDealSelection(ctx, intent, d)
+						autoResult, autoErr := h.router.ResolveDealSelection(ctx, intent, d, actor)
 						if autoErr == nil {
 							formatted, fmtErr := h.nlpSvc.FormatResponse(ctx, intent, autoResult)
 							if fmtErr == nil {
@@ -450,7 +495,104 @@ func (h *Handler) clearPendingCreate(sessionID string) {
 	h.pendingCreateMu.Unlock()
 }
 
-func (h *Handler) handlePendingSelection(ctx context.Context, sessionID, msg string) (string, bool, error) {
+func (h *Handler) startScheduledTaskFlow(ctx context.Context, sessionID string, intent domain.Intent, actor intentRouter.Actor) string {
+	draft := pendingScheduledTask{
+		Intent: domain.Intent{
+			Name:       domain.IntentCreateScheduledTask,
+			Parameters: map[string]string{},
+			RawText:    intent.RawText,
+		},
+	}
+	for key, value := range intent.Parameters {
+		draft.Intent.Parameters[key] = strings.TrimSpace(value)
+	}
+	prepareScheduledTaskDraft(&draft)
+	h.setPendingScheduledTask(sessionID, draft)
+	return h.nextScheduledTaskQuestion(ctx, sessionID, draft, actor)
+}
+
+func (h *Handler) handlePendingScheduledTask(ctx context.Context, sessionID, msg string, actor intentRouter.Actor) (string, bool, error) {
+	draft, ok := h.getPendingScheduledTask(sessionID)
+	if !ok {
+		return "", false, nil
+	}
+	normalized := normalizeIntentText(msg)
+	if strings.Contains(normalized, " cancelar ") || strings.Contains(normalized, " cancela ") {
+		h.clearPendingScheduledTask(sessionID)
+		return "Tudo bem, cancelei a criacao da tarefa.", true, nil
+	}
+	switch draft.nextField() {
+	case "deal_name":
+		draft.Intent.Parameters["deal_name"] = strings.TrimSpace(msg)
+	case "subject":
+		draft.Intent.Parameters["subject"] = strings.TrimSpace(msg)
+	case "date":
+		draft.Intent.Parameters["date"] = normalizeTaskDate(msg)
+	case "hour":
+		draft.Intent.Parameters["hour"] = normalizeTaskHour(msg)
+	case "confirm":
+		if isAffirmative(msg) {
+			result, err := h.router.RouteForActor(ctx, draft.Intent, actor)
+			if err != nil {
+				return h.handleRouteError(err, sessionID, draft.Intent), true, nil
+			}
+			h.clearPendingScheduledTask(sessionID)
+			if task, ok := result.(domain.Task); ok {
+				return formatCreatedTask(task), true, nil
+			}
+			return "Tarefa criada com sucesso.", true, nil
+		}
+		if isNegative(msg) {
+			h.clearPendingScheduledTask(sessionID)
+			return "Sem problema, nao criei a tarefa. Se quiser, me envie os dados de novo.", true, nil
+		}
+		return "Para criar a tarefa, responda *sim*. Para cancelar, responda *nao*.", true, nil
+	}
+	prepareScheduledTaskDraft(&draft)
+	h.setPendingScheduledTask(sessionID, draft)
+	return h.nextScheduledTaskQuestion(ctx, sessionID, draft, actor), true, nil
+}
+
+func (h *Handler) nextScheduledTaskQuestion(ctx context.Context, sessionID string, draft pendingScheduledTask, actor intentRouter.Actor) string {
+	switch draft.nextField() {
+	case "deal_name":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Em qual negociacao devo criar essa tarefa?"
+	case "subject":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Qual e o assunto da tarefa?"
+	case "date":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Para qual data devo agendar? Pode responder como *hoje*, *amanha* ou *DD/MM/AAAA*."
+	case "hour":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Qual horario? Use HH:MM, por exemplo 14:30."
+	default:
+		h.setPendingScheduledTask(sessionID, draft)
+		return scheduledTaskConfirmation(draft)
+	}
+}
+
+func (h *Handler) getPendingScheduledTask(sessionID string) (pendingScheduledTask, bool) {
+	h.pendingTaskMu.Lock()
+	defer h.pendingTaskMu.Unlock()
+	draft, ok := h.pendingTasks[sessionID]
+	return draft, ok
+}
+
+func (h *Handler) setPendingScheduledTask(sessionID string, draft pendingScheduledTask) {
+	h.pendingTaskMu.Lock()
+	h.pendingTasks[sessionID] = draft
+	h.pendingTaskMu.Unlock()
+}
+
+func (h *Handler) clearPendingScheduledTask(sessionID string) {
+	h.pendingTaskMu.Lock()
+	delete(h.pendingTasks, sessionID)
+	h.pendingTaskMu.Unlock()
+}
+
+func (h *Handler) handlePendingSelection(ctx context.Context, sessionID, msg string, actor intentRouter.Actor) (string, bool, error) {
 	index, ok := parseSelection(msg)
 	if !ok {
 		return "", false, nil
@@ -471,12 +613,16 @@ func (h *Handler) handlePendingSelection(ctx context.Context, sessionID, msg str
 		intent.Parameters["deal_name"] = selected.Name
 		intent.RawText = fmt.Sprintf("%s (opcao %d: %s)", intent.RawText, index+1, selected.Name)
 
-		result, err := h.router.ResolveDealSelection(ctx, intent, selected)
+		result, err := h.router.ResolveDealSelection(ctx, intent, selected, actor)
 		if err != nil {
 			return h.handleRouteError(err, sessionID, intent), true, nil
 		}
 
 		h.setActiveDeal(sessionID, selected)
+
+		if task, ok := result.(domain.Task); ok {
+			return formatCreatedTask(task), true, nil
+		}
 
 		formatted, err := h.nlpSvc.FormatResponse(ctx, intent, result)
 		if err != nil {
@@ -712,6 +858,220 @@ func createDealConfirmation(draft pendingCreateDeal) string {
 	return strings.Join(lines, "\n")
 }
 
+func formatScheduledTasks(tasks []adminSvc.ScheduledTaskSummary) string {
+	if len(tasks) == 0 {
+		return "Nao ha tarefas agendadas cadastradas no momento."
+	}
+	lines := []string{"Tarefas agendadas:"}
+	for i, task := range tasks {
+		status := "inativa"
+		if task.Active {
+			status = "ativa"
+		}
+		lines = append(lines, "", fmt.Sprintf("%d. *%s* (%s)", i+1, task.Name, status))
+		lines = append(lines, fmt.Sprintf("Etapa monitorada: %s", valueOrDefault(task.DealStageName, "Nao informada")))
+		lines = append(lines, fmt.Sprintf("Regra: pendente ha mais de %d horas", task.TimeThresholdHours))
+		if !task.LastCheckedAt.IsZero() {
+			lines = append(lines, fmt.Sprintf("Ultima verificacao: %s", task.LastCheckedAt.Format("02/01/2006 15:04")))
+		}
+		if len(task.Recipients) > 0 {
+			names := make([]string, 0, len(task.Recipients))
+			for _, recipient := range task.Recipients {
+				names = append(names, recipient.Name)
+			}
+			lines = append(lines, "Destinatarios: "+strings.Join(names, ", "))
+		}
+		if len(task.PendingRDTasks) > 0 {
+			lines = append(lines, fmt.Sprintf("Pendencias no RD: %d tarefa(s)", len(task.PendingRDTasks)))
+			limit := len(task.PendingRDTasks)
+			if limit > 10 {
+				limit = 10
+			}
+			for j := 0; j < limit; j++ {
+				item := task.PendingRDTasks[j]
+				parts := []string{valueOrDefault(item.Subject, "Sem assunto")}
+				if item.DealName != "" {
+					parts = append(parts, "negociacao "+item.DealName)
+				}
+				if len(item.ResponsibleNames) > 0 {
+					parts = append(parts, "responsavel "+strings.Join(item.ResponsibleNames, ", "))
+				}
+				when := formatRDTaskDate(item.Date, item.Hour)
+				if when != "" {
+					parts = append(parts, "data "+when)
+				}
+				if item.Markup != "" {
+					parts = append(parts, "status "+translateTaskMarkup(item.Markup))
+				}
+				if item.Notes != "" {
+					parts = append(parts, "obs "+item.Notes)
+				}
+				lines = append(lines, "- "+strings.Join(parts, " | "))
+			}
+			if len(task.PendingRDTasks) > limit {
+				lines = append(lines, fmt.Sprintf("- ...mais %d tarefa(s)", len(task.PendingRDTasks)-limit))
+			}
+			continue
+		}
+		if !task.Active {
+			lines = append(lines, "Pendencias: alerta inativo.")
+			continue
+		}
+		if len(task.PendingDeals) == 0 {
+			lines = append(lines, "Pendencias: nenhuma negociacao pendente agora.")
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Pendencias: %d negociacao(oes)", len(task.PendingDeals)))
+		limit := len(task.PendingDeals)
+		if limit > 8 {
+			limit = 8
+		}
+		for j := 0; j < limit; j++ {
+			deal := task.PendingDeals[j]
+			parts := []string{deal.Name}
+			if deal.ResponsibleName != "" {
+				parts = append(parts, "responsavel "+deal.ResponsibleName)
+			}
+			if deal.ContactName != "" {
+				parts = append(parts, "contato "+deal.ContactName)
+			}
+			parts = append(parts, fmt.Sprintf("parada ha %d dia(s)", deal.DaysPending))
+			if deal.AlreadyNotified {
+				parts = append(parts, "ja notificada na janela atual")
+			}
+			lines = append(lines, fmt.Sprintf("- %s", strings.Join(parts, " | ")))
+		}
+		if len(task.PendingDeals) > limit {
+			lines = append(lines, fmt.Sprintf("- ...mais %d pendencia(s)", len(task.PendingDeals)-limit))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatRDTaskDate(date, hour string) string {
+	date = strings.TrimSpace(date)
+	hour = strings.TrimSpace(hour)
+	if date == "" {
+		return hour
+	}
+	if parsed, err := time.Parse(time.RFC3339, date); err == nil {
+		date = parsed.Format("02/01/2006")
+	}
+	if hour == "" {
+		return date
+	}
+	return date + " " + hour
+}
+
+func translateTaskMarkup(markup string) string {
+	switch strings.ToLower(strings.TrimSpace(markup)) {
+	case "past":
+		return "atrasada"
+	case "today":
+		return "para hoje"
+	case "future":
+		return "futura"
+	default:
+		return markup
+	}
+}
+
+func valueOrDefault(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func prepareScheduledTaskDraft(draft *pendingScheduledTask) {
+	if draft == nil {
+		return
+	}
+	p := draft.Intent.Parameters
+	if p["type"] == "" {
+		p["type"] = "task"
+	}
+	if p["date"] != "" {
+		p["date"] = normalizeTaskDate(p["date"])
+	}
+	if p["hour"] != "" {
+		p["hour"] = normalizeTaskHour(p["hour"])
+	}
+}
+
+func scheduledTaskConfirmation(draft pendingScheduledTask) string {
+	p := draft.Intent.Parameters
+	lines := []string{
+		"Vou criar esta tarefa no RD:",
+		"",
+		fmt.Sprintf("*Negociacao:* %s", p["deal_name"]),
+		fmt.Sprintf("*Assunto:* %s", p["subject"]),
+		fmt.Sprintf("*Data:* %s", p["date"]),
+		fmt.Sprintf("*Horario:* %s", p["hour"]),
+		fmt.Sprintf("*Tipo:* %s", p["type"]),
+	}
+	if p["owner_name"] != "" {
+		lines = append(lines, fmt.Sprintf("*Responsavel:* %s", p["owner_name"]))
+	}
+	if p["notes"] != "" {
+		lines = append(lines, fmt.Sprintf("*Observacoes:* %s", p["notes"]))
+	}
+	lines = append(lines, "", "Posso criar agora? Responda *sim* para confirmar ou *nao* para cancelar.")
+	return strings.Join(lines, "\n")
+}
+
+func formatCreatedTask(task domain.Task) string {
+	lines := []string{
+		"Tarefa criada com sucesso.",
+		"",
+		fmt.Sprintf("*Assunto:* %s", task.Subject),
+	}
+	if task.DealName != "" {
+		lines = append(lines, fmt.Sprintf("*Negociacao:* %s", task.DealName))
+	}
+	if task.Date != "" {
+		lines = append(lines, fmt.Sprintf("*Data:* %s", formatRDTaskDate(task.Date, task.Hour)))
+	}
+	if len(task.ResponsibleNames) > 0 {
+		lines = append(lines, fmt.Sprintf("*Responsavel:* %s", strings.Join(task.ResponsibleNames, ", ")))
+	}
+	if task.Notes != "" {
+		lines = append(lines, fmt.Sprintf("*Observacoes:* %s", task.Notes))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeTaskDate(value string) string {
+	value = strings.TrimSpace(value)
+	normalized := strings.TrimSpace(normalizeIntentText(value))
+	now := time.Now()
+	switch normalized {
+	case "hoje":
+		return now.Format("2006-01-02")
+	case "amanha":
+		return now.AddDate(0, 0, 1).Format("2006-01-02")
+	}
+	for _, layout := range []string{"2006-01-02", "02/01/2006", "02-01-2006"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.Format("2006-01-02")
+		}
+	}
+	return value
+}
+
+func normalizeTaskHour(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.ReplaceAll(value, "h", ":")
+	value = strings.TrimSuffix(value, ":")
+	for _, layout := range []string{"15:04", "15"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.Format("15:04")
+		}
+	}
+	return value
+}
+
 func normalizeDealOwnerIntent(intent *domain.Intent) {
 	if intent.Name != domain.IntentGetDeals || intent.Parameters == nil {
 		return
@@ -811,6 +1171,26 @@ func (p pendingCreateDeal) nextField() string {
 	}
 	if strings.TrimSpace(p.Intent.Parameters["stage"]) == "" {
 		return "stage"
+	}
+	return "confirm"
+}
+
+type pendingScheduledTask struct {
+	Intent domain.Intent
+}
+
+func (p pendingScheduledTask) nextField() string {
+	if strings.TrimSpace(p.Intent.Parameters["deal_name"]) == "" {
+		return "deal_name"
+	}
+	if strings.TrimSpace(p.Intent.Parameters["subject"]) == "" {
+		return "subject"
+	}
+	if strings.TrimSpace(p.Intent.Parameters["date"]) == "" {
+		return "date"
+	}
+	if strings.TrimSpace(p.Intent.Parameters["hour"]) == "" {
+		return "hour"
 	}
 	return "confirm"
 }

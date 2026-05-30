@@ -53,6 +53,18 @@ type UpdateDealParams struct {
 	AllowedOwnerID map[string]struct{}
 }
 
+type CreateScheduledTaskParams struct {
+	DealName       string
+	Subject        string
+	Type           string
+	Date           string
+	Hour           string
+	Notes          string
+	UserID         string
+	OwnerName      string
+	AllowedOwnerID map[string]struct{}
+}
+
 // MultipleDealsError is returned when a search finds more than one deal with the same name.
 type MultipleDealsError struct {
 	Deals []domain.Deal
@@ -490,6 +502,47 @@ func (s *Service) AssociateContactToDeal(ctx context.Context, dealName, contactN
 	}, nil
 }
 
+func (s *Service) CreateScheduledTask(ctx context.Context, params CreateScheduledTaskParams) (domain.Task, error) {
+	deal, err := s.findSingleDeal(ctx, params.DealName, params.AllowedOwnerID)
+	if err != nil {
+		return domain.Task{}, err
+	}
+	return s.CreateScheduledTaskForDeal(ctx, deal, params)
+}
+
+func (s *Service) CreateScheduledTaskForDeal(ctx context.Context, deal domain.Deal, params CreateScheduledTaskParams) (domain.Task, error) {
+	taskType := strings.TrimSpace(params.Type)
+	if taskType == "" {
+		taskType = "task"
+	}
+	userIDs := []string{}
+	if strings.TrimSpace(params.OwnerName) != "" {
+		owner, suggestions, err := s.findOwner(ctx, params.OwnerName)
+		if err != nil {
+			return domain.Task{}, err
+		}
+		if owner.ID == "" {
+			return domain.Task{}, &OwnerNotFoundError{Name: params.OwnerName, Suggestions: suggestions}
+		}
+		userIDs = []string{owner.ID}
+	} else if strings.TrimSpace(params.UserID) != "" {
+		userIDs = []string{strings.TrimSpace(params.UserID)}
+	}
+	resp, err := s.client.CreateTask(ctx, rdClient.CreateTaskParams{
+		DealID:  deal.ID,
+		Subject: params.Subject,
+		Type:    taskType,
+		Date:    params.Date,
+		Hour:    params.Hour,
+		Notes:   params.Notes,
+		UserIDs: userIDs,
+	})
+	if err != nil {
+		return domain.Task{}, err
+	}
+	return mapTask(resp), nil
+}
+
 // --- helpers ---
 
 func (s *Service) findSingleDeal(ctx context.Context, name string, allowedOwnerID map[string]struct{}) (domain.Deal, error) {
@@ -573,6 +626,29 @@ func mapDeals(resp []rdClient.DealResponse) []domain.Deal {
 		})
 	}
 	return deals
+}
+
+func mapTask(resp rdClient.TaskResponse) domain.Task {
+	names := make([]string, 0, len(resp.Users))
+	for _, user := range resp.Users {
+		name := strings.TrimSpace(user.Name)
+		if name == "" {
+			name = strings.TrimSpace(user.Nickname)
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return domain.Task{
+		ID:               resp.ID,
+		Subject:          resp.Subject,
+		Type:             resp.Type,
+		Date:             resp.Date,
+		Hour:             resp.Hour,
+		Notes:            resp.Notes,
+		DealName:         resp.Deal.Name,
+		ResponsibleNames: names,
+	}
 }
 
 func mapOwner(d rdClient.DealResponse) domain.DealOwner {

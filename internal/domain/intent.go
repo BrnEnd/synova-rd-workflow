@@ -17,6 +17,8 @@ const (
 	IntentAssociateContactToDeal IntentName = "associate_contact_to_deal"
 	IntentGetDealActivities      IntentName = "get_deal_activities"
 	IntentCreateDealActivity     IntentName = "create_deal_activity"
+	IntentGetScheduledTasks      IntentName = "get_scheduled_tasks"
+	IntentCreateScheduledTask    IntentName = "create_scheduled_task"
 	IntentUnknown                IntentName = "unknown"
 )
 

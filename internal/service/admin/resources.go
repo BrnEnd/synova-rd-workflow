@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	rdClient "synova-rd-workflow/internal/client/rdstation"
 	"synova-rd-workflow/internal/domain"
 )
 
@@ -67,6 +68,41 @@ type AlertRunResult struct {
 	Forced         bool                  `json:"forced"`
 	Recipients     []domain.Collaborator `json:"recipients"`
 	MatchedDealIDs []string              `json:"matched_deal_ids"`
+}
+
+type ScheduledTaskSummary struct {
+	AlertID             string                     `json:"alert_id"`
+	Name                string                     `json:"name"`
+	Active              bool                       `json:"active"`
+	DealStageName       string                     `json:"deal_stage_name"`
+	TimeThresholdHours  int                        `json:"time_threshold_hours"`
+	RepeatIntervalHours int                        `json:"repeat_interval_hours"`
+	LastCheckedAt       time.Time                  `json:"last_checked_at,omitempty"`
+	Recipients          []domain.Collaborator      `json:"recipients"`
+	PendingDeals        []ScheduledTaskPendingDeal `json:"pending_deals"`
+	PendingRDTasks      []ScheduledRDPendingTask   `json:"pending_rd_tasks"`
+	AlreadyNotified     int                        `json:"already_notified"`
+}
+
+type ScheduledTaskPendingDeal struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	ResponsibleName string `json:"responsible_name"`
+	ContactName     string `json:"contact_name"`
+	DaysPending     int    `json:"days_pending"`
+	AlreadyNotified bool   `json:"already_notified"`
+}
+
+type ScheduledRDPendingTask struct {
+	ID               string   `json:"id"`
+	Subject          string   `json:"subject"`
+	Type             string   `json:"type"`
+	Date             string   `json:"date"`
+	Hour             string   `json:"hour"`
+	Markup           string   `json:"markup"`
+	Notes            string   `json:"notes"`
+	DealName         string   `json:"deal_name"`
+	ResponsibleNames []string `json:"responsible_names"`
 }
 
 func NewResourceService(store AdminStore, evolution EvolutionAdminClient, rd DealClient) *ResourceService {
@@ -199,6 +235,106 @@ func (s *ResourceService) RunAlertNow(ctx context.Context, id string) (AlertRunR
 		return AlertRunResult{}, fmt.Errorf("%w: rdstation", ErrInvalidInput)
 	}
 	return ExecuteAlert(ctx, s.store, s.rd, s.evolution, alert, AlertExecutionOptions{Force: true})
+}
+
+func (s *ResourceService) ListScheduledTasks(ctx context.Context) ([]ScheduledTaskSummary, error) {
+	if s.rd == nil {
+		return nil, fmt.Errorf("%w: rdstation", ErrInvalidInput)
+	}
+	alerts, err := s.ListAlerts(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]ScheduledTaskSummary, 0, len(alerts))
+	open := false
+	rdTasks, err := s.rd.GetTasks(ctx, rdClient.GetTasksParams{Done: &open, Limit: 200})
+	if err != nil {
+		return nil, err
+	}
+	if len(rdTasks) > 0 {
+		summaries = append(summaries, ScheduledTaskSummary{
+			Name:           "Tarefas pendentes do RD Station",
+			Active:         true,
+			PendingRDTasks: mapRDPendingTasks(rdTasks),
+		})
+	}
+	now := time.Now().UTC()
+	for _, alert := range alerts {
+		recipients, err := activeRecipientCollaborators(ctx, s.store, alert.RecipientIDs)
+		if err != nil {
+			return nil, err
+		}
+		summary := ScheduledTaskSummary{
+			AlertID:             alert.ID,
+			Name:                alert.Name,
+			Active:              alert.Active,
+			DealStageName:       alert.DealStageName,
+			TimeThresholdHours:  alert.TimeThresholdHours,
+			RepeatIntervalHours: alert.RepeatIntervalHours,
+			LastCheckedAt:       alert.LastCheckedAt,
+			Recipients:          recipients,
+		}
+		if !alert.Active {
+			summaries = append(summaries, summary)
+			continue
+		}
+		deals, err := s.rd.GetDeals(ctx, rdClient.GetDealsParams{DealStageID: alert.DealStageID})
+		if err != nil {
+			return nil, err
+		}
+		cutoff := now.Add(-time.Duration(alert.TimeThresholdHours) * time.Hour)
+		for _, deal := range deals {
+			updatedAt, parseErr := time.Parse(time.RFC3339, deal.UpdatedAt)
+			if parseErr != nil || updatedAt.After(cutoff) {
+				continue
+			}
+			already, err := s.store.WasAlertSent(ctx, alert.ID+"#"+deal.ID)
+			if err != nil {
+				return nil, err
+			}
+			if already {
+				summary.AlreadyNotified++
+			}
+			summary.PendingDeals = append(summary.PendingDeals, ScheduledTaskPendingDeal{
+				ID:              deal.ID,
+				Name:            deal.Name,
+				ResponsibleName: responsibleName(deal),
+				ContactName:     firstDealContactName(deal),
+				DaysPending:     int(now.Sub(updatedAt).Hours() / 24),
+				AlreadyNotified: already,
+			})
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
+func mapRDPendingTasks(tasks []rdClient.TaskResponse) []ScheduledRDPendingTask {
+	out := make([]ScheduledRDPendingTask, 0, len(tasks))
+	for _, task := range tasks {
+		names := make([]string, 0, len(task.Users))
+		for _, user := range task.Users {
+			name := strings.TrimSpace(user.Name)
+			if name == "" {
+				name = strings.TrimSpace(user.Nickname)
+			}
+			if name != "" {
+				names = append(names, name)
+			}
+		}
+		out = append(out, ScheduledRDPendingTask{
+			ID:               task.ID,
+			Subject:          task.Subject,
+			Type:             task.Type,
+			Date:             task.Date,
+			Hour:             task.Hour,
+			Markup:           task.Markup,
+			Notes:            task.Notes,
+			DealName:         task.Deal.Name,
+			ResponsibleNames: names,
+		})
+	}
+	return out
 }
 
 func (s *ResourceService) ListAllowlist(ctx context.Context, activeOnly bool) ([]domain.AllowlistEntry, error) {

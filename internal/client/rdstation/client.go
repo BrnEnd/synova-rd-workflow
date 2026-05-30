@@ -92,6 +92,37 @@ type ActivitiesListResponse struct {
 	Total      int                `json:"total"`
 }
 
+type TaskDealResponse struct {
+	ID   string `json:"_id"`
+	Name string `json:"name"`
+}
+
+type TaskUserResponse struct {
+	ID       string `json:"_id"`
+	Name     string `json:"name"`
+	Nickname string `json:"nickname"`
+}
+
+type TaskResponse struct {
+	ID        string             `json:"_id"`
+	CreatedAt string             `json:"created_at"`
+	Date      string             `json:"date"`
+	Deal      TaskDealResponse   `json:"deal"`
+	Done      bool               `json:"done"`
+	Hour      string             `json:"hour"`
+	Markup    string             `json:"markup"`
+	Notes     string             `json:"notes"`
+	Subject   string             `json:"subject"`
+	Type      string             `json:"type"`
+	UserIDs   []string           `json:"user_ids"`
+	Users     []TaskUserResponse `json:"users"`
+}
+
+type TasksListResponse struct {
+	Tasks []TaskResponse `json:"tasks"`
+	Total int            `json:"total"`
+}
+
 type DealStageListResponse struct {
 	DealStages []struct {
 		ID             string `json:"_id"`
@@ -118,6 +149,23 @@ type GetDealsParams struct {
 	Name        string
 	DealStageID string
 	Win         *bool
+}
+
+type GetTasksParams struct {
+	Done   *bool
+	UserID string
+	DealID string
+	Limit  int
+}
+
+type CreateTaskParams struct {
+	DealID  string
+	Subject string
+	Type    string
+	Date    string
+	Hour    string
+	Notes   string
+	UserIDs []string
 }
 
 type CreateDealParams struct {
@@ -342,6 +390,62 @@ func (c *Client) GetDeals(ctx context.Context, params GetDealsParams) ([]DealRes
 	}
 
 	return result.Deals, nil
+}
+
+// GetTasks fetches scheduled RD Station tasks.
+func (c *Client) GetTasks(ctx context.Context, params GetTasksParams) ([]TaskResponse, error) {
+	limit := params.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	q := url.Values{"limit": []string{strconv.Itoa(limit)}}
+	if params.Done != nil {
+		q.Set("done", strconv.FormatBool(*params.Done))
+	}
+	if params.UserID != "" {
+		q.Set("user_id", params.UserID)
+	}
+	if params.DealID != "" {
+		q.Set("deal_id", params.DealID)
+	}
+
+	data, err := c.do(ctx, http.MethodGet, "/tasks?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result TasksListResponse
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("rdstation GetTasks unmarshal: %w", err)
+	}
+	return result.Tasks, nil
+}
+
+// CreateTask creates a scheduled RD Station task linked to a deal.
+func (c *Client) CreateTask(ctx context.Context, params CreateTaskParams) (TaskResponse, error) {
+	task := map[string]interface{}{
+		"deal_id": params.DealID,
+		"subject": params.Subject,
+		"type":    params.Type,
+		"date":    params.Date,
+		"hour":    params.Hour,
+	}
+	if params.Notes != "" {
+		task["notes"] = params.Notes
+	}
+	if len(params.UserIDs) > 0 {
+		task["user_ids"] = params.UserIDs
+	}
+	payload := map[string]interface{}{"task": task}
+	data, err := c.do(ctx, http.MethodPost, "/tasks", payload)
+	if err != nil {
+		return TaskResponse{}, err
+	}
+	var result TaskResponse
+	if err := json.Unmarshal(data, &result); err != nil {
+		return TaskResponse{}, fmt.Errorf("rdstation CreateTask unmarshal: %w", err)
+	}
+	return result, nil
 }
 
 // CreateDeal creates a new deal in RD Station.

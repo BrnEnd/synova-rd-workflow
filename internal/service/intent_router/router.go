@@ -121,6 +121,19 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 			AllowedOwnerID: owners,
 		})
 
+	case domain.IntentCreateScheduledTask:
+		return r.rdstation.CreateScheduledTask(ctx, rdSvc.CreateScheduledTaskParams{
+			DealName:       p["deal_name"],
+			Subject:        p["subject"],
+			Type:           p["type"],
+			Date:           p["date"],
+			Hour:           p["hour"],
+			Notes:          p["notes"],
+			UserID:         actor.RDStationID,
+			OwnerName:      p["owner_name"],
+			AllowedOwnerID: owners,
+		})
+
 	case domain.IntentUnknown:
 		return nil, nil
 
@@ -130,7 +143,7 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 }
 
 // ResolveDealSelection executes the original intent against a specific deal chosen by the user.
-func (r *Router) ResolveDealSelection(ctx context.Context, intent domain.Intent, deal domain.Deal) (interface{}, error) {
+func (r *Router) ResolveDealSelection(ctx context.Context, intent domain.Intent, deal domain.Deal, actor Actor) (interface{}, error) {
 	switch intent.Name {
 	case domain.IntentGetDeal:
 		return r.rdstation.GetDealByID(ctx, deal.ID)
@@ -140,6 +153,18 @@ func (r *Router) ResolveDealSelection(ctx context.Context, intent domain.Intent,
 
 	case domain.IntentGetDealActivities:
 		return r.rdstation.GetDealActivitiesByID(ctx, deal.ID)
+
+	case domain.IntentCreateScheduledTask:
+		p := intent.Parameters
+		return r.rdstation.CreateScheduledTaskForDeal(ctx, deal, rdSvc.CreateScheduledTaskParams{
+			Subject:   p["subject"],
+			Type:      p["type"],
+			Date:      p["date"],
+			Hour:      p["hour"],
+			Notes:     p["notes"],
+			UserID:    actor.RDStationID,
+			OwnerName: p["owner_name"],
+		})
 
 	default:
 		return r.rdstation.GetDealByID(ctx, deal.ID)

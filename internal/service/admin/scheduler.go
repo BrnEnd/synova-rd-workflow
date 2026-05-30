@@ -14,6 +14,8 @@ import (
 
 type DealClient interface {
 	GetDeals(ctx context.Context, params rdClient.GetDealsParams) ([]rdClient.DealResponse, error)
+	GetTasks(ctx context.Context, params rdClient.GetTasksParams) ([]rdClient.TaskResponse, error)
+	CreateTask(ctx context.Context, params rdClient.CreateTaskParams) (rdClient.TaskResponse, error)
 }
 
 type Scheduler struct {
@@ -231,4 +233,11 @@ func responsibleName(deal rdClient.DealResponse) string {
 	default:
 		return "Nao informado"
 	}
+}
+
+func firstDealContactName(deal rdClient.DealResponse) string {
+	if len(deal.Contacts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(deal.Contacts[0].Name)
 }

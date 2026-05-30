@@ -36,6 +36,9 @@ Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 - create_deal_activity → parâmetros: "deal_name" (OBRIGATÓRIO — negociação onde registrar), "text" (OBRIGATÓRIO — conteúdo da anotação)
 - unknown        → quando não for possível identificar a intenção
 
+- get_scheduled_tasks -> sem parametros; usado quando o usuario pedir tarefas agendadas, alertas agendados, pendencias agendadas ou o que esta pendente nos alertas
+- create_scheduled_task -> parametros: "deal_name" (negociacao), "subject" (assunto da tarefa), "date" (AAAA-MM-DD), "hour" (HH:MM), "type" (call, email, meeting, task, lunch, visit, whatsapp), "owner_name" (responsavel opcional), "notes" (observacoes opcionais)
+
 REGRAS CRÍTICAS:
 - Para get_deal e get_deal_contacts: sempre use a chave "deal_name" com o nome da negociação
 - Para get_deals: quando o usuário pedir negociações "do", "da", "responsável", "dono", "vendedor" ou "atribuídas a" uma pessoa, use "owner_name"; não use "name" para o nome da pessoa
@@ -62,7 +65,7 @@ var intentTool = openaiClient.Tool{
 						"get_contacts", "get_deals", "get_deal", "get_deal_contacts",
 						"create_contact", "create_deal", "update_deal", "move_deal_stage",
 						"delete_deal", "update_contact", "associate_contact_to_deal",
-						"get_deal_activities", "create_deal_activity", "unknown",
+						"get_deal_activities", "create_deal_activity", "get_scheduled_tasks", "create_scheduled_task", "unknown",
 					},
 					"description": "A intenção identificada na mensagem",
 				},
@@ -129,6 +132,23 @@ var intentTool = openaiClient.Tool{
 						"text": map[string]interface{}{
 							"type":        "string",
 							"description": "Conteúdo textual da anotação a registrar na negociação (create_deal_activity)",
+						},
+						"subject": map[string]interface{}{
+							"type":        "string",
+							"description": "Assunto da tarefa a criar no RD Station (create_scheduled_task)",
+						},
+						"date": map[string]interface{}{
+							"type":        "string",
+							"description": "Data da tarefa no formato AAAA-MM-DD (create_scheduled_task)",
+						},
+						"hour": map[string]interface{}{
+							"type":        "string",
+							"description": "Horario da tarefa no formato HH:MM (create_scheduled_task)",
+						},
+						"type": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"call", "email", "meeting", "task", "lunch", "visit", "whatsapp"},
+							"description": "Tipo da tarefa no RD Station (create_scheduled_task)",
 						},
 					},
 					"additionalProperties": false,

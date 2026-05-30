@@ -32,3 +32,15 @@ type Activity struct {
 	Text string
 	Date string
 }
+
+// Task represents a scheduled RD Station task linked to a deal.
+type Task struct {
+	ID               string
+	Subject          string
+	Type             string
+	Date             string
+	Hour             string
+	Notes            string
+	DealName         string
+	ResponsibleNames []string
+}
