@@ -13,6 +13,7 @@ import (
 type ServiceInterface interface {
 	ParseIntent(ctx context.Context, history []domain.Message, input string) (domain.Intent, error)
 	FormatResponse(ctx context.Context, intent domain.Intent, result interface{}) (string, error)
+	TranscribeAudio(ctx context.Context, audio []byte, filename string) (string, error)
 }
 
 const systemPrompt = `Você é um assistente especializado em CRM. Analise a mensagem do usuário e identifique a intenção.
@@ -25,7 +26,7 @@ Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 - get_deal       → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação específica mencionada pelo usuário)
 - get_deal_contacts → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação)
 - create_contact → parâmetros: "name" (obrigatório), "email", "phone", "company" (opcionais)
-- create_deal    → parâmetros: "name" (OBRIGATÓRIO — nome da nova negociação), "contact_name" (opcional), "stage" (opcional)
+- create_deal    → parâmetros: "name" (nome da nova negociação), "company" (cliente/empresa), "product" (produto), "contact_name" (contato responsável no cliente), "stage" (etapa), "owner_name" (vendedor/responsável), "notes" (observações)
 - update_deal    → parâmetros: "deal_name" (OBRIGATÓRIO), "field" (ex: "name" ou "stage"), "value" (novo valor)
 - move_deal_stage → parâmetros: "deal_name" (OBRIGATÓRIO), "target_stage" (OBRIGATÓRIO — nome do estágio destino)
 - delete_deal    -> parametro OBRIGATORIO: "deal_name" (quando o usuario pedir para apagar/excluir/deletar uma negociacao)
@@ -36,7 +37,7 @@ Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 REGRAS CRÍTICAS:
 - Para get_deal e get_deal_contacts: sempre use a chave "deal_name" com o nome da negociação
 - Para get_deals: quando o usuário pedir negociações "do", "da", "responsável", "dono", "vendedor" ou "atribuídas a" uma pessoa, use "owner_name"; não use "name" para o nome da pessoa
-- Para create_deal: sempre use a chave "name" com o nome da nova negociação
+- Para create_deal: "card" significa negociação. Se o usuário informar cliente/empresa e produto, preencha "company" e "product"; se não houver "name", monte "name" como "Cliente - Produto". Se informar vendedor/responsável, use "owner_name". Qualquer detalhe adicional que não caiba nos campos estruturados deve ir em "notes".
 - Para update_contact: "contact_name" é o nome do contato a editar; "field" é o campo (email/phone/name); "value" é o novo conteúdo
 - Para associate_contact_to_deal: "deal_name" é a negociação destino; "contact_name" é o contato a associar
 - Nunca deixe parâmetros obrigatórios vazios — se o usuário mencionou um nome, extraia-o
@@ -81,7 +82,11 @@ var intentTool = openaiClient.Tool{
 						},
 						"company": map[string]interface{}{
 							"type":        "string",
-							"description": "Empresa do contato (create_contact)",
+							"description": "Empresa/cliente do contato (create_contact) ou cliente da nova negociação (create_deal)",
+						},
+						"product": map[string]interface{}{
+							"type":        "string",
+							"description": "Produto relacionado à nova negociação/card (create_deal). Se houver cliente e produto, o nome da negociação deve ser Cliente - Produto.",
 						},
 						"stage": map[string]interface{}{
 							"type":        "string",
@@ -102,7 +107,11 @@ var intentTool = openaiClient.Tool{
 						},
 						"contact_name": map[string]interface{}{
 							"type":        "string",
-							"description": "Nome do contato a associar à nova negociação (create_deal), a editar (update_contact) ou a vincular a uma negociação (associate_contact_to_deal)",
+							"description": "Nome do contato responsável no cliente a associar à nova negociação (create_deal), a editar (update_contact) ou a vincular a uma negociação (associate_contact_to_deal)",
+						},
+						"notes": map[string]interface{}{
+							"type":        "string",
+							"description": "Observações livres para registrar na negociação quando o usuário disser qualquer detalhe adicional.",
 						},
 						"field": map[string]interface{}{
 							"type":        "string",
@@ -205,6 +214,10 @@ Se o resultado indicar um erro, informe o usuário de forma gentil sem expor det
 	}
 
 	return *resp.Choices[0].Message.Content, nil
+}
+
+func (s *Service) TranscribeAudio(ctx context.Context, audio []byte, filename string) (string, error) {
+	return s.client.TranscribeAudio(ctx, audio, filename)
 }
 
 // FallbackResponse returns the standard message for unknown intents.

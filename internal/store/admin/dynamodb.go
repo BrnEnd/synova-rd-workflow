@@ -173,7 +173,7 @@ func (s *DynamoDBStore) FindAllowlistByPhone(ctx context.Context, phone string) 
 	}
 	phone = normalizePhone(phone)
 	for _, item := range list {
-		if normalizePhone(item.PhoneNumber) == phone {
+		if phonesEquivalent(normalizePhone(item.PhoneNumber), phone) {
 			return item, nil
 		}
 	}
@@ -254,6 +254,20 @@ func normalizePhone(phone string) string {
 	phone = strings.ReplaceAll(phone, "-", "")
 	phone = strings.ReplaceAll(phone, "(", "")
 	phone = strings.ReplaceAll(phone, ")", "")
+	return phone
+}
+
+func phonesEquivalent(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return optionalBrazilMobileNine(a) == b || optionalBrazilMobileNine(b) == a
+}
+
+func optionalBrazilMobileNine(phone string) string {
+	if len(phone) == 13 && strings.HasPrefix(phone, "55") && phone[4] == '9' {
+		return phone[:4] + phone[5:]
+	}
 	return phone
 }
 

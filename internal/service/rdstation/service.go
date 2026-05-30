@@ -39,6 +39,9 @@ type CreateDealParams struct {
 	Name        string
 	ContactName string
 	Stage       string
+	OwnerName   string
+	ProductName string
+	Notes       string
 }
 
 // UpdateDealParams holds fields to update a deal.
@@ -85,11 +88,21 @@ func (e *MissingDealNameError) Error() string {
 
 // ContactNotFoundError is returned when no contact matches the given name.
 type ContactNotFoundError struct {
-	Name string
+	Name        string
+	Suggestions []string
 }
 
 func (e *ContactNotFoundError) Error() string {
 	return fmt.Sprintf("no contact found with name '%s'", e.Name)
+}
+
+type OwnerNotFoundError struct {
+	Name        string
+	Suggestions []string
+}
+
+func (e *OwnerNotFoundError) Error() string {
+	return fmt.Sprintf("no owner found with name '%s'", e.Name)
 }
 
 // UpdateContactParams holds fields to update a contact.
@@ -178,8 +191,14 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 	}
 
 	deals := filterDealsByOwner(mapDeals(resp), params.AllowedOwnerID)
-	deals = filterDealsByOwnerName(deals, params.OwnerName)
-	return deals, nil
+	if strings.TrimSpace(params.OwnerName) == "" {
+		return deals, nil
+	}
+	filtered := filterDealsByOwnerName(deals, params.OwnerName)
+	if len(filtered) == 0 && len(deals) > 0 {
+		return nil, &OwnerNotFoundError{Name: params.OwnerName, Suggestions: closestOwnerNames(deals, params.OwnerName, 5)}
+	}
+	return filtered, nil
 }
 
 // CreateDeal creates a new deal in RD Station.
@@ -199,9 +218,31 @@ func (s *Service) CreateDeal(ctx context.Context, params CreateDealParams) (doma
 		if err != nil {
 			return domain.Deal{}, fmt.Errorf("rdstation.CreateDeal search contact: %w", err)
 		}
-		if len(contacts) > 0 {
-			clientParams.ContactIDs = []string{contacts[0].ID}
+		if len(contacts) == 0 {
+			return domain.Deal{}, &ContactNotFoundError{Name: params.ContactName, Suggestions: s.suggestContactNames(ctx, params.ContactName, 5)}
 		}
+		clientParams.ContactIDs = []string{contacts[0].ID}
+	}
+
+	if params.OwnerName != "" {
+		owner, suggestions, err := s.findOwner(ctx, params.OwnerName)
+		if err != nil {
+			return domain.Deal{}, err
+		}
+		if owner.ID == "" {
+			return domain.Deal{}, &OwnerNotFoundError{Name: params.OwnerName, Suggestions: suggestions}
+		}
+		clientParams.UserID = owner.ID
+	}
+
+	if params.ProductName != "" {
+		clientParams.Products = []rdClient.DealProductParams{{
+			Name:        params.ProductName,
+			Description: params.Notes,
+			Amount:      1,
+			BasePrice:   0,
+			Price:       0,
+		}}
 	}
 
 	resp, err := s.client.CreateDeal(ctx, clientParams)
@@ -369,7 +410,7 @@ func (s *Service) UpdateContact(ctx context.Context, params UpdateContactParams)
 		return domain.Contact{}, err
 	}
 	if len(contacts) == 0 {
-		return domain.Contact{}, &ContactNotFoundError{Name: params.ContactName}
+		return domain.Contact{}, &ContactNotFoundError{Name: params.ContactName, Suggestions: s.suggestContactNames(ctx, params.ContactName, 5)}
 	}
 
 	contact := contacts[0]
@@ -410,7 +451,7 @@ func (s *Service) AssociateContactToDeal(ctx context.Context, dealName, contactN
 		return domain.Deal{}, err
 	}
 	if len(contacts) == 0 {
-		return domain.Deal{}, &ContactNotFoundError{Name: contactName}
+		return domain.Deal{}, &ContactNotFoundError{Name: contactName, Suggestions: s.suggestContactNames(ctx, contactName, 5)}
 	}
 	newContactID := contacts[0].ID
 
@@ -566,6 +607,149 @@ func filterDealsByOwnerName(deals []domain.Deal, ownerName string) []domain.Deal
 		}
 	}
 	return out
+}
+
+func closestOwnerNames(deals []domain.Deal, target string, limit int) []string {
+	seen := map[string]struct{}{}
+	names := make([]string, 0)
+	for _, deal := range deals {
+		name := strings.TrimSpace(deal.Owner.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return closestStrings(names, target, limit)
+}
+
+func (s *Service) findOwner(ctx context.Context, target string) (domain.DealOwner, []string, error) {
+	deals, err := s.client.GetDeals(ctx, rdClient.GetDealsParams{})
+	if err != nil {
+		return domain.DealOwner{}, nil, fmt.Errorf("rdstation.findOwner get deals: %w", err)
+	}
+	owners := make([]domain.DealOwner, 0)
+	seen := map[string]struct{}{}
+	for _, deal := range mapDeals(deals) {
+		if deal.Owner.ID == "" {
+			continue
+		}
+		key := deal.Owner.ID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		owners = append(owners, deal.Owner)
+	}
+	normalizedTarget := normalizeSearchText(target)
+	for _, owner := range owners {
+		name := normalizeSearchText(owner.Name)
+		email := normalizeSearchText(owner.Email)
+		if name == normalizedTarget || strings.Contains(name, normalizedTarget) || strings.Contains(normalizedTarget, name) || strings.Contains(email, normalizedTarget) {
+			return owner, nil, nil
+		}
+	}
+	ownerDeals := make([]domain.Deal, 0, len(owners))
+	for _, owner := range owners {
+		ownerDeals = append(ownerDeals, domain.Deal{Owner: owner})
+	}
+	return domain.DealOwner{}, closestOwnerNames(ownerDeals, target, 5), nil
+}
+
+func (s *Service) suggestContactNames(ctx context.Context, target string, limit int) []string {
+	contacts, err := s.client.GetContacts(ctx, rdClient.GetContactsParams{})
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(contacts))
+	for _, contact := range contacts {
+		if strings.TrimSpace(contact.Name) != "" {
+			names = append(names, contact.Name)
+		}
+	}
+	return closestStrings(names, target, limit)
+}
+
+func closestStrings(values []string, target string, limit int) []string {
+	target = normalizeSearchText(target)
+	type scored struct {
+		value string
+		score int
+	}
+	scoredValues := make([]scored, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := normalizeSearchText(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		score := levenshtein(key, target)
+		if strings.Contains(key, target) || strings.Contains(target, key) {
+			score = 0
+		}
+		scoredValues = append(scoredValues, scored{value: value, score: score})
+	}
+	for i := 0; i < len(scoredValues); i++ {
+		for j := i + 1; j < len(scoredValues); j++ {
+			if scoredValues[j].score < scoredValues[i].score {
+				scoredValues[i], scoredValues[j] = scoredValues[j], scoredValues[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > len(scoredValues) {
+		limit = len(scoredValues)
+	}
+	out := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, scoredValues[i].value)
+	}
+	return out
+}
+
+func levenshtein(a, b string) int {
+	ar := []rune(a)
+	br := []rune(b)
+	if len(ar) == 0 {
+		return len(br)
+	}
+	if len(br) == 0 {
+		return len(ar)
+	}
+	prev := make([]int, len(br)+1)
+	curr := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		curr[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 0
+			if ar[i-1] != br[j-1] {
+				cost = 1
+			}
+			curr[j] = minInt(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(br)]
+}
+
+func minInt(values ...int) int {
+	min := values[0]
+	for _, value := range values[1:] {
+		if value < min {
+			min = value
+		}
+	}
+	return min
 }
 
 func normalizeSearchText(value string) string {

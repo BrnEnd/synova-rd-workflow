@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"time"
 )
 
@@ -46,6 +48,10 @@ type ChatCompletionRequest struct {
 
 type ChatCompletionResponse struct {
 	Choices []ChatChoice `json:"choices"`
+}
+
+type transcriptionResponse struct {
+	Text string `json:"text"`
 }
 
 // --- Tool / Function calling types ---
@@ -131,4 +137,59 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	}
 
 	return ChatCompletionResponse{}, lastErr
+}
+
+func (c *Client) TranscribeAudio(ctx context.Context, audio []byte, filename string) (string, error) {
+	if len(audio) == 0 {
+		return "", fmt.Errorf("openai transcription: empty audio")
+	}
+	if filename == "" {
+		filename = "audio.ogg"
+	}
+	if filepath.Ext(filename) == "" {
+		filename += ".ogg"
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", "whisper-1"); err != nil {
+		return "", fmt.Errorf("openai transcription model field: %w", err)
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("openai transcription file field: %w", err)
+	}
+	if _, err := part.Write(audio); err != nil {
+		return "", fmt.Errorf("openai transcription write audio: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("openai transcription close multipart: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/audio/transcriptions", &body)
+	if err != nil {
+		return "", fmt.Errorf("openai transcription new request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("openai transcription http do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("openai transcription read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("openai transcription status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var parsed transcriptionResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", fmt.Errorf("openai transcription unmarshal: %w", err)
+	}
+	return parsed.Text, nil
 }

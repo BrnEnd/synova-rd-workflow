@@ -111,12 +111,22 @@ type CreateDealParams struct {
 	Name        string
 	DealStageID string
 	ContactIDs  []string
+	UserID      string
+	Products    []DealProductParams
 }
 
 type UpdateDealParams struct {
 	Name        string
 	DealStageID string
 	ContactIDs  []string // if non-empty, sets contacts_attributes on the deal
+}
+
+type DealProductParams struct {
+	Name        string
+	Description string
+	Amount      float64
+	BasePrice   float64
+	Price       float64
 }
 
 type UpdateContactParams struct {
@@ -292,7 +302,7 @@ func (c *Client) CreateContact(ctx context.Context, params CreateContactParams) 
 
 // GetDeals fetches deals from RD Station.
 func (c *Client) GetDeals(ctx context.Context, params GetDealsParams) ([]DealResponse, error) {
-	q := url.Values{}
+	q := url.Values{"limit": []string{"200"}}
 	if params.Name != "" {
 		q.Set("name", params.Name)
 	}
@@ -334,6 +344,23 @@ func (c *Client) CreateDeal(ctx context.Context, params CreateDealParams) (DealR
 	}
 	if params.DealStageID != "" {
 		deal["deal_stage_id"] = params.DealStageID
+	}
+	if params.UserID != "" {
+		deal["user_id"] = params.UserID
+	}
+	if len(params.Products) > 0 {
+		products := make([]map[string]interface{}, 0, len(params.Products))
+		for _, product := range params.Products {
+			item := map[string]interface{}{
+				"name":        product.Name,
+				"description": product.Description,
+				"amount":      product.Amount,
+				"base_price":  product.BasePrice,
+				"price":       product.Price,
+			}
+			products = append(products, item)
+		}
+		deal["deal_products"] = products
 	}
 
 	payload := map[string]interface{}{"deal": deal}

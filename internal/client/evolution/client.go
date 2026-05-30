@@ -130,48 +130,82 @@ func (c *Client) ConnectQRCode(ctx context.Context) (domain.WhatsAppQRCode, erro
 
 func (c *Client) SetWebhook(ctx context.Context, webhookURL string) error {
 	payload := map[string]interface{}{
-		"enabled":           true,
-		"url":               webhookURL,
-		"webhook_by_events": false,
-		"webhook_base64":    false,
-		"events": []string{
-			"MESSAGES_UPSERT",
-			"CONNECTION_UPDATE",
-			"QRCODE_UPDATED",
-			"SEND_MESSAGE",
+		"webhook": map[string]interface{}{
+			"enabled":  true,
+			"url":      webhookURL,
+			"byEvents": false,
+			"base64":   true,
+			"events": []string{
+				"MESSAGES_UPSERT",
+				"CONNECTION_UPDATE",
+				"QRCODE_UPDATED",
+				"SEND_MESSAGE",
+			},
 		},
 	}
-	return c.post(ctx, "/webhook/instance", payload)
+	return c.post(ctx, fmt.Sprintf("/webhook/set/%s", c.instance), payload)
+}
+
+func (c *Client) FetchMediaBase64(ctx context.Context, remoteJID, messageID string, fromMe bool) (string, string, error) {
+	payload := map[string]interface{}{
+		"message": map[string]interface{}{
+			"key": map[string]interface{}{
+				"remoteJid": remoteJID,
+				"id":        messageID,
+				"fromMe":    fromMe,
+			},
+		},
+	}
+	body, err := c.postJSON(ctx, fmt.Sprintf("/chat/getBase64FromMediaMessage/%s", c.instance), payload)
+	if err != nil {
+		return "", "", err
+	}
+	var response struct {
+		Base64   string `json:"base64"`
+		Mimetype string `json:"mimetype"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", "", fmt.Errorf("evolution media base64 unmarshal: %w", err)
+	}
+	if strings.TrimSpace(response.Base64) == "" {
+		return "", "", fmt.Errorf("evolution media base64 empty")
+	}
+	return response.Base64, response.Mimetype, nil
 }
 
 func (c *Client) post(ctx context.Context, path string, payload interface{}) error {
+	_, err := c.postJSON(ctx, path, payload)
+	return err
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, payload interface{}) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("evolution marshal: %w", err)
+		return nil, fmt.Errorf("evolution marshal: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("evolution new request: %w", err)
+		return nil, fmt.Errorf("evolution new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("apikey", c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("evolution http do: %w", err)
+		return nil, fmt.Errorf("evolution http do: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("evolution read body: %w", err)
+		return nil, fmt.Errorf("evolution read body: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("evolution status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("evolution status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return nil
+	return respBody, nil
 }
 
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {

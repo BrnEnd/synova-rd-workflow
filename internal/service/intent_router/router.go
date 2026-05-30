@@ -77,6 +77,9 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 			Name:        p["name"],
 			ContactName: p["contact_name"],
 			Stage:       p["stage"],
+			OwnerName:   p["owner_name"],
+			ProductName: p["product"],
+			Notes:       p["notes"],
 		})
 
 	case domain.IntentUpdateDeal:

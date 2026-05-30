@@ -97,6 +97,10 @@ func (m *mockNLPService) FormatResponse(_ context.Context, _ domain.Intent, _ in
 	return "resultado formatado", nil
 }
 
+func (m *mockNLPService) TranscribeAudio(_ context.Context, _ []byte, _ string) (string, error) {
+	return "", nil
+}
+
 func buildTestRouter(t *testing.T, nlpMock *mockNLPService, sender *mockSender, rdServer *httptest.Server) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
