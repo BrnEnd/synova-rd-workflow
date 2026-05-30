@@ -88,7 +88,7 @@ func TestSellerOnlySeesOwnDeals(t *testing.T) {
 	}
 }
 
-func TestSupervisorSeesTeamDeals(t *testing.T) {
+func TestSupervisorSeesAllDeals(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := rdClient.DealsListResponse{
 			Deals: []rdClient.DealResponse{
@@ -113,7 +113,8 @@ func TestSupervisorSeesTeamDeals(t *testing.T) {
 	}
 
 	deals := result.([]domain.Deal)
-	if len(deals) != 2 {
-		t.Fatalf("expected supervisor and team deals, got %#v", deals)
+	// Supervisors bypass the owner filter and see all deals.
+	if len(deals) != 3 {
+		t.Fatalf("expected all 3 deals for supervisor, got %#v", deals)
 	}
 }

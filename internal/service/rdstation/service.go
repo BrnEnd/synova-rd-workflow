@@ -42,6 +42,7 @@ type CreateDealParams struct {
 	OwnerName   string
 	ProductName string
 	Notes       string
+	UserID      string
 }
 
 // UpdateDealParams holds fields to update a deal.
@@ -203,7 +204,10 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 
 // CreateDeal creates a new deal in RD Station.
 func (s *Service) CreateDeal(ctx context.Context, params CreateDealParams) (domain.Deal, error) {
-	clientParams := rdClient.CreateDealParams{Name: params.Name}
+	clientParams := rdClient.CreateDealParams{
+		Name:   params.Name,
+		UserID: params.UserID,
+	}
 
 	if params.Stage != "" {
 		stageID, err := s.findStageID(ctx, params.Stage)
@@ -772,4 +776,55 @@ func parseRDTime(s string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// CreateDealActivityParams holds the parameters to create a deal annotation.
+type CreateDealActivityParams struct {
+	DealName       string
+	UserID         string
+	Text           string
+	AllowedOwnerID map[string]struct{}
+}
+
+// GetDealActivities returns the manual annotations of a deal identified by name.
+func (s *Service) GetDealActivities(ctx context.Context, dealName string, allowedOwnerID map[string]struct{}) ([]domain.Activity, error) {
+	deal, err := s.findSingleDeal(ctx, dealName, allowedOwnerID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.GetDealActivitiesByID(ctx, deal.ID)
+}
+
+// GetDealActivitiesByID returns the manual annotations of a deal by its ID.
+func (s *Service) GetDealActivitiesByID(ctx context.Context, dealID string) ([]domain.Activity, error) {
+	resp, err := s.client.GetActivities(ctx, dealID)
+	if err != nil {
+		return nil, err
+	}
+
+	activities := make([]domain.Activity, len(resp))
+	for i, a := range resp {
+		activities[i] = domain.Activity{ID: a.ID, Text: a.Text, Date: a.Date}
+	}
+	return activities, nil
+}
+
+// CreateDealActivity registers a manual annotation in a deal identified by name.
+func (s *Service) CreateDealActivity(ctx context.Context, params CreateDealActivityParams) (domain.Activity, error) {
+	if params.UserID == "" {
+		return domain.Activity{}, fmt.Errorf("seu perfil não possui RD Station ID configurado; contate o administrador")
+	}
+
+	deal, err := s.findSingleDeal(ctx, params.DealName, params.AllowedOwnerID)
+	if err != nil {
+		return domain.Activity{}, err
+	}
+
+	resp, err := s.client.CreateActivity(ctx, deal.ID, params.UserID, params.Text)
+	if err != nil {
+		return domain.Activity{}, err
+	}
+
+	return domain.Activity{ID: resp.ID, Text: resp.Text, Date: resp.Date}, nil
 }

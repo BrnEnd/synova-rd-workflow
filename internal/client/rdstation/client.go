@@ -79,6 +79,19 @@ type DealContactsListResponse struct {
 	Total    int                   `json:"total"`
 }
 
+type ActivityResponse struct {
+	ID     string `json:"_id"`
+	Date   string `json:"date"`
+	DealID string `json:"deal_id"`
+	Text   string `json:"text"`
+	UserID string `json:"user_id"`
+}
+
+type ActivitiesListResponse struct {
+	Activities []ActivityResponse `json:"activities"`
+	Total      int                `json:"total"`
+}
+
 type DealStageListResponse struct {
 	DealStages []struct {
 		ID             string `json:"_id"`
@@ -494,4 +507,46 @@ func (c *Client) GetDealContacts(ctx context.Context, dealID string) ([]DealCont
 	}
 
 	return result.Contacts, nil
+}
+
+// GetActivities returns the manual annotations registered in a deal.
+func (c *Client) GetActivities(ctx context.Context, dealID string) ([]ActivityResponse, error) {
+	q := url.Values{}
+	q.Set("deal_id", dealID)
+	q.Set("limit", "20")
+
+	data, err := c.do(ctx, http.MethodGet, "/activities?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ActivitiesListResponse
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("rdstation GetActivities unmarshal: %w", err)
+	}
+
+	return result.Activities, nil
+}
+
+// CreateActivity creates a manual annotation in a deal.
+func (c *Client) CreateActivity(ctx context.Context, dealID, userID, text string) (ActivityResponse, error) {
+	payload := map[string]interface{}{
+		"activity": map[string]interface{}{
+			"deal_id": dealID,
+			"user_id": userID,
+			"text":    text,
+		},
+	}
+
+	data, err := c.do(ctx, http.MethodPost, "/activities", payload)
+	if err != nil {
+		return ActivityResponse{}, err
+	}
+
+	var result ActivityResponse
+	if err := json.Unmarshal(data, &result); err != nil {
+		return ActivityResponse{}, fmt.Errorf("rdstation CreateActivity unmarshal: %w", err)
+	}
+
+	return result, nil
 }
