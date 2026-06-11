@@ -9,6 +9,15 @@ Backend em Go e painel administrativo em Next.js para atendimento via WhatsApp, 
 
 ## Patch Notes
 
+### 2026-06-11 - Status temporal e formatacao de tarefas do RD Station
+
+- A listagem de tarefas pendentes do RD Station agora recalcula o status temporal pela data real da tarefa no fuso `America/Sao_Paulo`.
+- Codigos internos como `tomorrow`, `week-0` e `week-1` deixam de aparecer para o usuario.
+- Campos textuais exibidos no WhatsApp sao sanitizados para remover caminhos locais, URIs `file:///` e caracteres de controle.
+- A resposta de tarefas pendentes passa a exibir no maximo 10 itens por mensagem, com suporte a `ver proximas`.
+- As tarefas sao ordenadas por prioridade temporal: atrasadas, hoje, amanha e futuras.
+- Campos vazios e metadados internos de alerta sao omitidos na listagem de pendencias do RD Station.
+
 ### 2026-06-11 - Criacao de tarefas no RD Station
 
 - O fluxo de criacao de tarefas agora remove valores padrao inferidos pelo NLP quando o usuario nao informou assunto, data ou horario explicitamente.

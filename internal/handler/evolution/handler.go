@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,8 @@ type Handler struct {
 	pendingCreates  map[string]pendingCreateDeal
 	pendingTaskMu   sync.Mutex
 	pendingTasks    map[string]pendingScheduledTask
+	rdTaskPagesMu   sync.Mutex
+	rdTaskPages     map[string]rdTaskPagination
 	activeDealsMu   sync.Mutex
 	activeDeals     map[string]domain.Deal
 }
@@ -77,6 +80,7 @@ func New(conv *convSvc.Service, nlpSvc nlp.ServiceInterface, router *intentRoute
 		pendingLists:   make(map[string][]domain.Deal),
 		pendingCreates: make(map[string]pendingCreateDeal),
 		pendingTasks:   make(map[string]pendingScheduledTask),
+		rdTaskPages:    make(map[string]rdTaskPagination),
 		activeDeals:    make(map[string]domain.Deal),
 	}
 	if fetcher, ok := sender.(MediaFetcher); ok {
@@ -208,6 +212,15 @@ func (h *Handler) processTextMessage(ctx context.Context, inbound inboundTextMes
 		return nil
 	}
 
+	if reply, ok := h.handleRDTaskPagination(session.ID, msg); ok {
+		_ = h.conv.SaveUserMessage(ctx, session.ID, msg, "get_scheduled_tasks_next_page")
+		_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
+		if err := h.sender.SendTextMessage(ctx, inbound.From, reply); err != nil {
+			return fmt.Errorf("send evolution task page reply: %w", err)
+		}
+		return nil
+	}
+
 	if isRecentDuplicate(history, msg) {
 		h.logger.InfoContext(ctx, "evolution duplicate user message ignored",
 			"from", maskPhone(inbound.From),
@@ -297,7 +310,7 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 			h.logger.WarnContext(ctx, "scheduled tasks summary failed", "session_id", sessionID, "error", err)
 			return nlp.ErrorResponse("consulta de tarefas agendadas")
 		}
-		return formatScheduledTasks(tasks)
+		return h.formatAndRememberScheduledTasks(sessionID, tasks)
 	}
 
 	result, routeErr := h.router.RouteForActor(ctx, intent, actor)
@@ -865,64 +878,173 @@ func createDealConfirmation(draft pendingCreateDeal) string {
 	return strings.Join(lines, "\n")
 }
 
+const rdTaskPageSize = 10
+
+var (
+	fileURIRegex     = regexp.MustCompile(`(?i)file:///[^\s|]+`)
+	windowsPathRegex = regexp.MustCompile(`[A-Za-z]:\\[^\s|]+`)
+	unixPathRegex    = regexp.MustCompile(`(?:^|\s)/(?:Users|home|tmp|var|mnt|Volumes)/[^\s|]+`)
+	controlCharRegex = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]`)
+	spaceRegex       = regexp.MustCompile(`\s{2,}`)
+)
+
+type taskTemporalStatus int
+
+const (
+	taskStatusOverdue taskTemporalStatus = iota
+	taskStatusToday
+	taskStatusTomorrow
+	taskStatusThisWeek
+	taskStatusNextWeek
+	taskStatusFuture
+	taskStatusInvalidDate
+)
+
+type formattedRDTask struct {
+	Subject          string
+	DealName         string
+	ResponsibleNames []string
+	DateText         string
+	Notes            string
+	Status           taskTemporalStatus
+	SortTime         time.Time
+}
+
+type rdTaskPagination struct {
+	Tasks []formattedRDTask
+	Next  int
+}
+
+func (h *Handler) formatAndRememberScheduledTasks(sessionID string, tasks []adminSvc.ScheduledTaskSummary) string {
+	now := nowInSaoPaulo()
+	rdTasks := collectFormattedRDTasks(tasks, now)
+	if len(rdTasks) > 0 {
+		if len(rdTasks) > rdTaskPageSize {
+			h.rdTaskPagesMu.Lock()
+			h.rdTaskPages[sessionID] = rdTaskPagination{Tasks: rdTasks, Next: rdTaskPageSize}
+			h.rdTaskPagesMu.Unlock()
+		} else {
+			h.clearRDTaskPagination(sessionID)
+		}
+		return formatRDTaskPage(rdTasks, 0, rdTaskPageSize)
+	}
+	h.clearRDTaskPagination(sessionID)
+	return formatScheduledAlertSummaries(tasks)
+}
+
 func formatScheduledTasks(tasks []adminSvc.ScheduledTaskSummary) string {
+	rdTasks := collectFormattedRDTasks(tasks, nowInSaoPaulo())
+	if len(rdTasks) > 0 {
+		return formatRDTaskPage(rdTasks, 0, rdTaskPageSize)
+	}
+	return formatScheduledAlertSummaries(tasks)
+}
+
+func collectFormattedRDTasks(summaries []adminSvc.ScheduledTaskSummary, now time.Time) []formattedRDTask {
+	items := make([]formattedRDTask, 0)
+	for _, summary := range summaries {
+		for _, task := range summary.PendingRDTasks {
+			items = append(items, prepareFormattedRDTask(task, now))
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		if taskStatusSortRank(left.Status) != taskStatusSortRank(right.Status) {
+			return taskStatusSortRank(left.Status) < taskStatusSortRank(right.Status)
+		}
+		if left.SortTime.IsZero() {
+			return false
+		}
+		if right.SortTime.IsZero() {
+			return true
+		}
+		return left.SortTime.Before(right.SortTime)
+	})
+	return items
+}
+
+func prepareFormattedRDTask(task adminSvc.ScheduledRDPendingTask, now time.Time) formattedRDTask {
+	when, dateText := parseRDTaskDateTime(task.Date, task.Hour)
+	status := calculateTaskTemporalStatus(when, now)
+	names := make([]string, 0, len(task.ResponsibleNames))
+	for _, name := range task.ResponsibleNames {
+		if sanitized := sanitizeTaskText(name); sanitized != "" {
+			names = append(names, sanitized)
+		}
+	}
+	return formattedRDTask{
+		Subject:          valueOrDefault(sanitizeTaskText(task.Subject), "Sem assunto"),
+		DealName:         sanitizeTaskText(task.DealName),
+		ResponsibleNames: names,
+		DateText:         dateText,
+		Notes:            sanitizeTaskText(task.Notes),
+		Status:           status,
+		SortTime:         when,
+	}
+}
+
+func formatRDTaskPage(tasks []formattedRDTask, start, limit int) string {
+	if len(tasks) == 0 {
+		return "Nao ha tarefas pendentes do RD Station no momento."
+	}
+	if start < 0 {
+		start = 0
+	}
+	if limit <= 0 {
+		limit = rdTaskPageSize
+	}
+	end := start + limit
+	if end > len(tasks) {
+		end = len(tasks)
+	}
+	lines := []string{
+		"*Tarefas pendentes do RD Station*",
+		"",
+		fmt.Sprintf("Foram encontradas %d tarefas:", len(tasks)),
+	}
+	for i := start; i < end; i++ {
+		task := tasks[i]
+		lines = append(lines, "", fmt.Sprintf("%d. *%s*", i+1, task.Subject))
+		if task.DealName != "" {
+			lines = append(lines, "Negociacao: "+task.DealName)
+		}
+		if len(task.ResponsibleNames) > 0 {
+			lines = append(lines, "Responsavel: "+strings.Join(task.ResponsibleNames, ", "))
+		}
+		if task.DateText != "" {
+			lines = append(lines, "Data: "+task.DateText)
+		}
+		lines = append(lines, "Status: "+taskTemporalStatusText(task.Status))
+		if task.Notes != "" {
+			lines = append(lines, "Observacao: "+task.Notes)
+		}
+	}
+	if end < len(tasks) {
+		lines = append(lines, "", fmt.Sprintf("Exibindo %d de %d tarefas. Digite \"ver proximas\" para continuar.", end, len(tasks)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatScheduledAlertSummaries(tasks []adminSvc.ScheduledTaskSummary) string {
 	if len(tasks) == 0 {
 		return "Nao ha tarefas agendadas cadastradas no momento."
 	}
 	lines := []string{"Tarefas agendadas:"}
 	for i, task := range tasks {
+		name := valueOrDefault(sanitizeTaskText(task.Name), "Tarefa sem nome")
 		status := "inativa"
 		if task.Active {
 			status = "ativa"
 		}
-		lines = append(lines, "", fmt.Sprintf("%d. *%s* (%s)", i+1, task.Name, status))
-		lines = append(lines, fmt.Sprintf("Etapa monitorada: %s", valueOrDefault(task.DealStageName, "Nao informada")))
-		lines = append(lines, fmt.Sprintf("Regra: pendente ha mais de %d horas", task.TimeThresholdHours))
+		lines = append(lines, "", fmt.Sprintf("%d. *%s* (%s)", i+1, name, status))
+		if stage := sanitizeTaskText(task.DealStageName); stage != "" {
+			lines = append(lines, "Etapa monitorada: "+stage)
+		}
+		if task.TimeThresholdHours > 0 {
+			lines = append(lines, fmt.Sprintf("Regra: pendente ha mais de %d horas", task.TimeThresholdHours))
+		}
 		if !task.LastCheckedAt.IsZero() {
-			lines = append(lines, fmt.Sprintf("Ultima verificacao: %s", task.LastCheckedAt.Format("02/01/2006 15:04")))
-		}
-		if len(task.Recipients) > 0 {
-			names := make([]string, 0, len(task.Recipients))
-			for _, recipient := range task.Recipients {
-				names = append(names, recipient.Name)
-			}
-			lines = append(lines, "Destinatarios: "+strings.Join(names, ", "))
-		}
-		if len(task.PendingRDTasks) > 0 {
-			lines = append(lines, fmt.Sprintf("Pendencias no RD: %d tarefa(s)", len(task.PendingRDTasks)))
-			limit := len(task.PendingRDTasks)
-			if limit > 10 {
-				limit = 10
-			}
-			for j := 0; j < limit; j++ {
-				item := task.PendingRDTasks[j]
-				parts := []string{valueOrDefault(item.Subject, "Sem assunto")}
-				if item.DealName != "" {
-					parts = append(parts, "negociacao "+item.DealName)
-				}
-				if len(item.ResponsibleNames) > 0 {
-					parts = append(parts, "responsavel "+strings.Join(item.ResponsibleNames, ", "))
-				}
-				when := formatRDTaskDate(item.Date, item.Hour)
-				if when != "" {
-					parts = append(parts, "data "+when)
-				}
-				if item.Markup != "" {
-					parts = append(parts, "status "+translateTaskMarkup(item.Markup))
-				}
-				if item.Notes != "" {
-					parts = append(parts, "obs "+item.Notes)
-				}
-				lines = append(lines, "- "+strings.Join(parts, " | "))
-			}
-			if len(task.PendingRDTasks) > limit {
-				lines = append(lines, fmt.Sprintf("- ...mais %d tarefa(s)", len(task.PendingRDTasks)-limit))
-			}
-			continue
-		}
-		if !task.Active {
-			lines = append(lines, "Pendencias: alerta inativo.")
-			continue
+			lines = append(lines, fmt.Sprintf("Ultima verificacao: %s", task.LastCheckedAt.In(saoPauloLocation()).Format("02/01/2006 15:04")))
 		}
 		if len(task.PendingDeals) == 0 {
 			lines = append(lines, "Pendencias: nenhuma negociacao pendente agora.")
@@ -935,18 +1057,18 @@ func formatScheduledTasks(tasks []adminSvc.ScheduledTaskSummary) string {
 		}
 		for j := 0; j < limit; j++ {
 			deal := task.PendingDeals[j]
-			parts := []string{deal.Name}
-			if deal.ResponsibleName != "" {
-				parts = append(parts, "responsavel "+deal.ResponsibleName)
+			parts := []string{sanitizeTaskText(deal.Name)}
+			if responsible := sanitizeTaskText(deal.ResponsibleName); responsible != "" {
+				parts = append(parts, "responsavel "+responsible)
 			}
-			if deal.ContactName != "" {
-				parts = append(parts, "contato "+deal.ContactName)
+			if contact := sanitizeTaskText(deal.ContactName); contact != "" {
+				parts = append(parts, "contato "+contact)
 			}
 			parts = append(parts, fmt.Sprintf("parada ha %d dia(s)", deal.DaysPending))
 			if deal.AlreadyNotified {
 				parts = append(parts, "ja notificada na janela atual")
 			}
-			lines = append(lines, fmt.Sprintf("- %s", strings.Join(parts, " | ")))
+			lines = append(lines, "- "+strings.Join(nonEmptyStrings(parts), " | "))
 		}
 		if len(task.PendingDeals) > limit {
 			lines = append(lines, fmt.Sprintf("- ...mais %d pendencia(s)", len(task.PendingDeals)-limit))
@@ -955,32 +1077,180 @@ func formatScheduledTasks(tasks []adminSvc.ScheduledTaskSummary) string {
 	return strings.Join(lines, "\n")
 }
 
+func (h *Handler) handleRDTaskPagination(sessionID, msg string) (string, bool) {
+	normalized := normalizeIntentText(msg)
+	if !(strings.Contains(normalized, " ver proximas ") || strings.Contains(normalized, " proximas ") || strings.Contains(normalized, " proxima pagina ")) {
+		return "", false
+	}
+	h.rdTaskPagesMu.Lock()
+	page, ok := h.rdTaskPages[sessionID]
+	if !ok || page.Next >= len(page.Tasks) {
+		h.rdTaskPagesMu.Unlock()
+		return "Nao ha proximas tarefas para exibir.", true
+	}
+	start := page.Next
+	page.Next += rdTaskPageSize
+	if page.Next >= len(page.Tasks) {
+		delete(h.rdTaskPages, sessionID)
+	} else {
+		h.rdTaskPages[sessionID] = page
+	}
+	h.rdTaskPagesMu.Unlock()
+	return formatRDTaskPage(page.Tasks, start, rdTaskPageSize), true
+}
+
+func (h *Handler) clearRDTaskPagination(sessionID string) {
+	h.rdTaskPagesMu.Lock()
+	delete(h.rdTaskPages, sessionID)
+	h.rdTaskPagesMu.Unlock()
+}
+
 func formatRDTaskDate(date, hour string) string {
+	_, text := parseRDTaskDateTime(date, hour)
+	return text
+}
+
+func parseRDTaskDateTime(date, hour string) (time.Time, string) {
 	date = strings.TrimSpace(date)
 	hour = strings.TrimSpace(hour)
 	if date == "" {
-		return hour
+		return time.Time{}, ""
 	}
-	if parsed, err := time.Parse(time.RFC3339, date); err == nil {
-		date = parsed.Format("02/01/2006")
+	loc := saoPauloLocation()
+	var day time.Time
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02", "02/01/2006", "02-01-2006"} {
+		if parsed, err := time.ParseInLocation(layout, date, loc); err == nil {
+			day = parsed.In(loc)
+			break
+		}
+	}
+	if day.IsZero() {
+		return time.Time{}, sanitizeTaskText(date)
 	}
 	if hour == "" {
-		return date
+		return time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc), day.Format("02/01/2006")
 	}
-	return date + " " + hour
+	cleanHour := normalizeTaskHour(hour)
+	if parsedHour, err := time.Parse("15:04", cleanHour); err == nil {
+		when := time.Date(day.Year(), day.Month(), day.Day(), parsedHour.Hour(), parsedHour.Minute(), 0, 0, loc)
+		return when, fmt.Sprintf("%s as %s", day.Format("02/01/2006"), cleanHour)
+	}
+	return time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc), day.Format("02/01/2006")
+}
+
+func calculateTaskTemporalStatus(taskDate, now time.Time) taskTemporalStatus {
+	if taskDate.IsZero() {
+		return taskStatusInvalidDate
+	}
+	loc := saoPauloLocation()
+	taskDay := dateOnly(taskDate.In(loc))
+	today := dateOnly(now.In(loc))
+	switch {
+	case taskDay.Before(today):
+		return taskStatusOverdue
+	case taskDay.Equal(today):
+		return taskStatusToday
+	case taskDay.Equal(today.AddDate(0, 0, 1)):
+		return taskStatusTomorrow
+	}
+	endOfCurrentWeek := endOfWeek(today)
+	if !taskDay.After(endOfCurrentWeek) {
+		return taskStatusThisWeek
+	}
+	if !taskDay.After(endOfCurrentWeek.AddDate(0, 0, 7)) {
+		return taskStatusNextWeek
+	}
+	return taskStatusFuture
+}
+
+func dateOnly(value time.Time) time.Time {
+	loc := value.Location()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, loc)
+}
+
+func endOfWeek(day time.Time) time.Time {
+	daysUntilSunday := (int(time.Sunday) - int(day.Weekday()) + 7) % 7
+	return day.AddDate(0, 0, daysUntilSunday)
+}
+
+func taskStatusSortRank(status taskTemporalStatus) int {
+	switch status {
+	case taskStatusOverdue:
+		return 0
+	case taskStatusToday:
+		return 1
+	case taskStatusTomorrow:
+		return 2
+	case taskStatusThisWeek, taskStatusNextWeek, taskStatusFuture:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func taskTemporalStatusText(status taskTemporalStatus) string {
+	switch status {
+	case taskStatusOverdue:
+		return "Atrasada"
+	case taskStatusToday:
+		return "Para hoje"
+	case taskStatusTomorrow:
+		return "Amanha"
+	case taskStatusThisWeek:
+		return "Nesta semana"
+	case taskStatusNextWeek:
+		return "Proxima semana"
+	case taskStatusFuture:
+		return "Futura"
+	default:
+		return "Data invalida"
+	}
 }
 
 func translateTaskMarkup(markup string) string {
+	return taskMarkupDisplayText(markup)
+}
+
+func taskMarkupDisplayText(markup string) string {
 	switch strings.ToLower(strings.TrimSpace(markup)) {
 	case "past":
-		return "atrasada"
+		return "Atrasada"
 	case "today":
-		return "para hoje"
+		return "Para hoje"
+	case "tomorrow":
+		return "Amanha"
+	case "week-0":
+		return "Nesta semana"
+	case "week-1":
+		return "Proxima semana"
 	case "future":
-		return "futura"
+		return "Futura"
 	default:
-		return markup
+		return "Nao informado"
 	}
+}
+
+func sanitizeTaskText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = fileURIRegex.ReplaceAllString(value, "")
+	value = windowsPathRegex.ReplaceAllString(value, "")
+	value = unixPathRegex.ReplaceAllString(value, " ")
+	value = controlCharRegex.ReplaceAllString(value, "")
+	value = spaceRegex.ReplaceAllString(value, " ")
+	return strings.TrimSpace(value)
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func valueOrDefault(value, fallback string) string {
@@ -1205,11 +1475,15 @@ func normalizeTaskHour(value string) string {
 }
 
 func nowInSaoPaulo() time.Time {
+	return time.Now().In(saoPauloLocation())
+}
+
+func saoPauloLocation() *time.Location {
 	loc, err := time.LoadLocation("America/Sao_Paulo")
 	if err != nil {
-		return time.Now()
+		return time.FixedZone("America/Sao_Paulo", -3*60*60)
 	}
-	return time.Now().In(loc)
+	return loc
 }
 
 func normalizeDealOwnerIntent(intent *domain.Intent) {
