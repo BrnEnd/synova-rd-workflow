@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -506,6 +507,7 @@ func (h *Handler) startScheduledTaskFlow(ctx context.Context, sessionID string, 
 	for key, value := range intent.Parameters {
 		draft.Intent.Parameters[key] = strings.TrimSpace(value)
 	}
+	clearUnmentionedScheduledTaskDefaults(&draft)
 	prepareScheduledTaskDraft(&draft)
 	h.setPendingScheduledTask(sessionID, draft)
 	return h.nextScheduledTaskQuestion(ctx, sessionID, draft, actor)
@@ -546,7 +548,12 @@ func (h *Handler) handlePendingScheduledTask(ctx context.Context, sessionID, msg
 			h.clearPendingScheduledTask(sessionID)
 			return "Sem problema, nao criei a tarefa. Se quiser, me envie os dados de novo.", true, nil
 		}
-		return "Para criar a tarefa, responda *sim*. Para cancelar, responda *nao*.", true, nil
+		if applyScheduledTaskCorrections(&draft, msg) {
+			prepareScheduledTaskDraft(&draft)
+			h.setPendingScheduledTask(sessionID, draft)
+			return h.nextScheduledTaskQuestion(ctx, sessionID, draft, actor), true, nil
+		}
+		return "Nao entendi se devo criar ou ajustar algum dado. Responda *sim* para criar, *nao* para cancelar, ou me diga o que quer mudar, por exemplo: assunto, data ou horario.", true, nil
 	}
 	prepareScheduledTaskDraft(&draft)
 	h.setPendingScheduledTask(sessionID, draft)
@@ -1000,6 +1007,128 @@ func prepareScheduledTaskDraft(draft *pendingScheduledTask) {
 	}
 }
 
+func clearUnmentionedScheduledTaskDefaults(draft *pendingScheduledTask) {
+	raw := normalizeIntentText(draft.Intent.RawText)
+	if raw == "" {
+		return
+	}
+	p := draft.Intent.Parameters
+	subject := strings.TrimSpace(p["subject"])
+	if subject != "" && !scheduledTaskSubjectMentioned(raw, subject) {
+		p["subject"] = ""
+	}
+	date := strings.TrimSpace(p["date"])
+	if date != "" && !scheduledTaskDateMentioned(raw, date) {
+		p["date"] = ""
+	}
+	hour := strings.TrimSpace(p["hour"])
+	if hour != "" && !scheduledTaskHourMentioned(raw, hour) {
+		p["hour"] = ""
+	}
+}
+
+func scheduledTaskSubjectMentioned(raw, subject string) bool {
+	normalizedSubject := strings.TrimSpace(normalizeIntentText(subject))
+	if normalizedSubject == "" || normalizedSubject == "nova tarefa" || normalizedSubject == "tarefa" {
+		return false
+	}
+	return strings.Contains(raw, normalizedSubject)
+}
+
+func scheduledTaskDateMentioned(raw, date string) bool {
+	if strings.Contains(raw, " hoje ") || strings.Contains(raw, " amanha ") || strings.Contains(raw, " amanhã ") || strings.Contains(raw, " agora ") {
+		return true
+	}
+	return strings.Contains(raw, normalizeIntentText(date)) || regexp.MustCompile(`\b\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?\b`).FindString(raw) != ""
+}
+
+func scheduledTaskHourMentioned(raw, hour string) bool {
+	if strings.Contains(raw, " agora ") || strings.Contains(raw, " horario ") || strings.Contains(raw, " horário ") || strings.Contains(raw, " hora ") {
+		return true
+	}
+	normalizedHour := strings.TrimSuffix(strings.ReplaceAll(strings.ToLower(strings.TrimSpace(hour)), "h", ":"), ":")
+	return normalizedHour != "" && strings.Contains(raw, normalizeIntentText(normalizedHour))
+}
+
+func applyScheduledTaskCorrections(draft *pendingScheduledTask, msg string) bool {
+	if draft == nil {
+		return false
+	}
+	changed := false
+	raw := strings.TrimSpace(msg)
+	normalized := normalizeIntentText(raw)
+	p := draft.Intent.Parameters
+
+	if subject := extractScheduledTaskSubject(raw); subject != "" {
+		p["subject"] = subject
+		changed = true
+	}
+	if strings.Contains(normalized, " agora ") {
+		now := nowInSaoPaulo()
+		p["date"] = now.Format("2006-01-02")
+		p["hour"] = now.Format("15:04")
+		changed = true
+	} else {
+		if date := extractScheduledTaskDate(raw); date != "" {
+			p["date"] = normalizeTaskDate(date)
+			changed = true
+		}
+		if hour := extractScheduledTaskHour(raw); hour != "" {
+			p["hour"] = normalizeTaskHour(hour)
+			changed = true
+		}
+	}
+	if dealName := extractScheduledTaskDealName(raw); dealName != "" {
+		p["deal_name"] = dealName
+		changed = true
+	}
+	return changed
+}
+
+func extractScheduledTaskSubject(value string) string {
+	patterns := []string{
+		`(?i)\bassunto\s+(?:deve\s+(?:ser|ter)|e|é|eh|ser|para)\s+(.+?)(?:,\s*|\s+e\s+(?:a\s+)?(?:hora|horario|horário|data)\b|$)`,
+		`(?i)\bcom\s+assunto\s+(.+?)(?:,\s*|\s+e\s+(?:a\s+)?(?:hora|horario|horário|data)\b|$)`,
+	}
+	return firstRegexGroup(value, patterns)
+}
+
+func extractScheduledTaskDate(value string) string {
+	normalized := normalizeIntentText(value)
+	for _, token := range []string{"hoje", "amanha", "amanhã"} {
+		if strings.Contains(normalized, " "+token+" ") {
+			return token
+		}
+	}
+	return regexp.MustCompile(`\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b`).FindString(value)
+}
+
+func extractScheduledTaskHour(value string) string {
+	hour := firstRegexGroup(value, []string{`(?i)\b(?:hora|horario|horário)\s+(?:deve\s+(?:ser|ter)|e|é|eh|ser|para|as|às)?\s*(\d{1,2}(?::\d{2}|h\d{0,2})?)`})
+	if hour != "" {
+		return hour
+	}
+	return regexp.MustCompile(`\b\d{1,2}:\d{2}\b|\b\d{1,2}h\d{0,2}\b`).FindString(value)
+}
+
+func extractScheduledTaskDealName(value string) string {
+	patterns := []string{
+		`(?i)\bnegociacao\s+(?:deve\s+ser|e|é|eh|para)\s+(.+?)(?:,\s*|\s+e\s+(?:o\s+)?(?:assunto|horario|horário|hora|data)\b|$)`,
+		`(?i)\bnegociação\s+(?:deve\s+ser|e|é|eh|para)\s+(.+?)(?:,\s*|\s+e\s+(?:o\s+)?(?:assunto|horario|horário|hora|data)\b|$)`,
+	}
+	return firstRegexGroup(value, patterns)
+}
+
+func firstRegexGroup(value string, patterns []string) string {
+	for _, pattern := range patterns {
+		matches := regexp.MustCompile(pattern).FindStringSubmatch(value)
+		if len(matches) > 1 {
+			return strings.TrimSpace(matches[1])
+		}
+	}
+	return ""
+}
+
 func scheduledTaskConfirmation(draft pendingScheduledTask) string {
 	p := draft.Intent.Parameters
 	lines := []string{
@@ -1045,14 +1174,14 @@ func formatCreatedTask(task domain.Task) string {
 func normalizeTaskDate(value string) string {
 	value = strings.TrimSpace(value)
 	normalized := strings.TrimSpace(normalizeIntentText(value))
-	now := time.Now()
+	now := nowInSaoPaulo()
 	switch normalized {
 	case "hoje":
 		return now.Format("2006-01-02")
-	case "amanha":
+	case "amanha", "amanhã":
 		return now.AddDate(0, 0, 1).Format("2006-01-02")
 	}
-	for _, layout := range []string{"2006-01-02", "02/01/2006", "02-01-2006"} {
+	for _, layout := range []string{"2006-01-02", "02/01/2006", "02-01-2006", "02/01/06", "02-01-06"} {
 		if parsed, err := time.Parse(layout, value); err == nil {
 			return parsed.Format("2006-01-02")
 		}
@@ -1062,6 +1191,9 @@ func normalizeTaskDate(value string) string {
 
 func normalizeTaskHour(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
+	if normalizeIntentText(value) == "agora" {
+		return nowInSaoPaulo().Format("15:04")
+	}
 	value = strings.ReplaceAll(value, "h", ":")
 	value = strings.TrimSuffix(value, ":")
 	for _, layout := range []string{"15:04", "15"} {
@@ -1070,6 +1202,14 @@ func normalizeTaskHour(value string) string {
 		}
 	}
 	return value
+}
+
+func nowInSaoPaulo() time.Time {
+	loc, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		return time.Now()
+	}
+	return time.Now().In(loc)
 }
 
 func normalizeDealOwnerIntent(intent *domain.Intent) {

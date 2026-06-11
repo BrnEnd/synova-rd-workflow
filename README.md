@@ -7,6 +7,16 @@
 
 Backend em Go e painel administrativo em Next.js para atendimento via WhatsApp, consulta ao RD Station CRM, gerenciamento de allowlist, perfis de acesso e alertas operacionais.
 
+## Patch Notes
+
+### 2026-06-11 - Criacao de tarefas no RD Station
+
+- O fluxo de criacao de tarefas agora remove valores padrao inferidos pelo NLP quando o usuario nao informou assunto, data ou horario explicitamente.
+- Na etapa de confirmacao, o usuario pode corrigir assunto, data, horario ou negociacao sem reiniciar a conversa.
+- Datas relativas como `hoje`, `amanha` e `agora` usam o fuso `America/Sao_Paulo`.
+- Horarios em formatos como `14h`, `14h30` e `14:30` sao normalizados antes da criacao no RD Station.
+- A resposta de confirmacao ficou mais segura: se o usuario nao responder claramente `sim` ou `nao`, o bot pede uma confirmacao ou orienta como ajustar os campos.
+
 ## O Que Este Projeto Faz
 
 `synova-rd-workflow` e o stack principal do bot da Silmax/Synova. Ele conecta uma instancia WhatsApp real pela Evolution API, recebe mensagens dos usuarios, interpreta a intencao com OpenAI, executa consultas ou operacoes no RD Station CRM e responde pelo WhatsApp.
@@ -217,4 +227,3 @@ Mensagens comuns:
 - Manter `EVOLUTION_SEND_DELAY=0s` em Lambda para evitar timeouts.
 - Revisar a allowlist antes de liberar usuarios finais.
 - Preferir alterar segredos por variaveis de ambiente/secret manager, nao por arquivos versionados.
-
