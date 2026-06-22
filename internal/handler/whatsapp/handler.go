@@ -29,6 +29,10 @@ type Sender interface {
 	SendTextMessage(ctx context.Context, to string, text string) error
 }
 
+type MediaDownloader interface {
+	DownloadMedia(ctx context.Context, mediaID string) ([]byte, string, error)
+}
+
 type AllowChecker interface {
 	IsAllowed(ctx context.Context, phone string) (bool, error)
 }
@@ -39,15 +43,16 @@ type AccessProfiler interface {
 
 // Handler holds all dependencies for the WhatsApp webhook.
 type Handler struct {
-	conv           *convSvc.Service
-	nlpSvc         nlp.ServiceInterface
-	router         *intentRouter.Router
-	sender         Sender
-	verifyToken    string
-	appSecret      string
-	logger         *slog.Logger
-	allowChecker   AllowChecker
-	accessProfiler AccessProfiler
+	conv            *convSvc.Service
+	nlpSvc          nlp.ServiceInterface
+	router          *intentRouter.Router
+	sender          Sender
+	verifyToken     string
+	appSecret       string
+	logger          *slog.Logger
+	allowChecker    AllowChecker
+	accessProfiler  AccessProfiler
+	mediaDownloader MediaDownloader
 }
 
 func (h *Handler) SetAllowChecker(checker AllowChecker) {
@@ -67,7 +72,7 @@ func New(
 	appSecret string,
 	logger *slog.Logger,
 ) *Handler {
-	return &Handler{
+	handler := &Handler{
 		conv:        conv,
 		nlpSvc:      nlpSvc,
 		router:      router,
@@ -76,6 +81,10 @@ func New(
 		appSecret:   appSecret,
 		logger:      logger,
 	}
+	if downloader, ok := sender.(MediaDownloader); ok {
+		handler.mediaDownloader = downloader
+	}
+	return handler
 }
 
 // RegisterRoutes wires the Meta verification and message webhook endpoints.
@@ -124,7 +133,7 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	inbound, ok := payload.firstTextMessage()
+	inbound, ok := payload.firstInboundMessage()
 	if !ok {
 		if status, ok := payload.firstStatus(); ok {
 			args := []any{
@@ -172,6 +181,13 @@ func (h *Handler) validSignature(signature string, rawBody []byte) bool {
 
 func (h *Handler) processTextMessage(c *gin.Context, inbound inboundTextMessage) error {
 	msg := strings.TrimSpace(inbound.Body)
+	if msg == "" && inbound.AudioID != "" {
+		text, err := h.transcribeAudioMessage(c.Request.Context(), inbound)
+		if err != nil {
+			return err
+		}
+		msg = strings.TrimSpace(text)
+	}
 	if msg == "" || len(msg) > 4096 || !whatsappFromRegex.MatchString(inbound.From) {
 		return nil
 	}
@@ -231,6 +247,33 @@ func (h *Handler) processTextMessage(c *gin.Context, inbound inboundTextMessage)
 	)
 
 	return nil
+}
+
+func (h *Handler) transcribeAudioMessage(ctx context.Context, inbound inboundTextMessage) (string, error) {
+	if h.mediaDownloader == nil {
+		return "", fmt.Errorf("whatsapp audio media downloader unavailable")
+	}
+
+	audio, mimeType, err := h.mediaDownloader.DownloadMedia(ctx, inbound.AudioID)
+	if err != nil {
+		return "", fmt.Errorf("download whatsapp audio: %w", err)
+	}
+	if inbound.AudioMimeType != "" {
+		mimeType = inbound.AudioMimeType
+	}
+
+	text, err := h.nlpSvc.TranscribeAudio(ctx, audio, audioFilename(mimeType))
+	if err != nil {
+		return "", fmt.Errorf("transcribe whatsapp audio: %w", err)
+	}
+
+	h.logger.InfoContext(ctx, "whatsapp audio transcribed",
+		"from", normalizePhoneForLog(inbound.From),
+		"wamid", inbound.ID,
+		"audio_bytes", len(audio),
+	)
+
+	return text, nil
 }
 
 func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domain.Intent, actor intentRouter.Actor) string {
@@ -352,9 +395,11 @@ func normalizePhoneForLog(from string) string {
 }
 
 type inboundTextMessage struct {
-	From string
-	ID   string
-	Body string
+	From          string
+	ID            string
+	Body          string
+	AudioID       string
+	AudioMimeType string
 }
 
 type metaWebhookPayload struct {
@@ -369,6 +414,10 @@ type metaWebhookPayload struct {
 					Text struct {
 						Body string `json:"body"`
 					} `json:"text"`
+					Audio struct {
+						ID       string `json:"id"`
+						MimeType string `json:"mime_type"`
+					} `json:"audio"`
 				} `json:"messages"`
 				Statuses []messageStatus `json:"statuses"`
 			} `json:"value"`
@@ -387,14 +436,16 @@ type messageStatus struct {
 	} `json:"errors"`
 }
 
-func (p metaWebhookPayload) firstTextMessage() (inboundTextMessage, bool) {
+func (p metaWebhookPayload) firstInboundMessage() (inboundTextMessage, bool) {
 	for _, entry := range p.Entry {
 		for _, change := range entry.Changes {
 			for _, msg := range change.Value.Messages {
-				if msg.Type != "text" {
-					continue
+				switch msg.Type {
+				case "text":
+					return inboundTextMessage{From: msg.From, ID: msg.ID, Body: msg.Text.Body}, true
+				case "audio":
+					return inboundTextMessage{From: msg.From, ID: msg.ID, AudioID: msg.Audio.ID, AudioMimeType: msg.Audio.MimeType}, true
 				}
-				return inboundTextMessage{From: msg.From, ID: msg.ID, Body: msg.Text.Body}, true
 			}
 		}
 	}
@@ -425,4 +476,14 @@ func (p metaWebhookPayload) ignoreReason() string {
 		}
 	}
 	return "no_messages"
+}
+
+func audioFilename(mimetype string) string {
+	if strings.Contains(mimetype, "mpeg") || strings.Contains(mimetype, "mp3") {
+		return "audio.mp3"
+	}
+	if strings.Contains(mimetype, "wav") {
+		return "audio.wav"
+	}
+	return "audio.ogg"
 }

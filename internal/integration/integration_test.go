@@ -68,9 +68,12 @@ func (m *memStore) SaveMessage(_ context.Context, msg domain.Message) error {
 }
 
 type mockSender struct {
-	to   string
-	text string
-	err  error
+	to          string
+	text        string
+	err         error
+	media       []byte
+	mediaMime   string
+	downloadErr error
 }
 
 func (m *mockSender) SendTextMessage(_ context.Context, to string, text string) error {
@@ -79,10 +82,16 @@ func (m *mockSender) SendTextMessage(_ context.Context, to string, text string) 
 	return m.err
 }
 
+func (m *mockSender) DownloadMedia(_ context.Context, _ string) ([]byte, string, error) {
+	return m.media, m.mediaMime, m.downloadErr
+}
+
 type mockNLPService struct {
-	intent domain.Intent
-	reply  string
-	err    error
+	intent          domain.Intent
+	reply           string
+	err             error
+	transcribedText string
+	transcribeErr   error
 }
 
 func (m *mockNLPService) ParseIntent(_ context.Context, _ []domain.Message, input string) (domain.Intent, error) {
@@ -98,7 +107,7 @@ func (m *mockNLPService) FormatResponse(_ context.Context, _ domain.Intent, _ in
 }
 
 func (m *mockNLPService) TranscribeAudio(_ context.Context, _ []byte, _ string) (string, error) {
-	return "", nil
+	return m.transcribedText, m.transcribeErr
 }
 
 func buildTestRouter(t *testing.T, nlpMock *mockNLPService, sender *mockSender, rdServer *httptest.Server) *gin.Engine {
@@ -158,6 +167,33 @@ func textPayload(t *testing.T, from, messageType, body string) []byte {
 						"id":   "wamid.test",
 						"type": messageType,
 						"text": map[string]string{"body": body},
+					}},
+				},
+			}},
+		}},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func audioPayload(t *testing.T, from string) []byte {
+	t.Helper()
+	payload := map[string]interface{}{
+		"object": "whatsapp_business_account",
+		"entry": []map[string]interface{}{{
+			"changes": []map[string]interface{}{{
+				"value": map[string]interface{}{
+					"messages": []map[string]interface{}{{
+						"from": from,
+						"id":   "wamid.test",
+						"type": "audio",
+						"audio": map[string]string{
+							"id":        "media.test",
+							"mime_type": "audio/ogg",
+						},
 					}},
 				},
 			}},
@@ -292,17 +328,24 @@ func TestWebhookGetContactsFullFlow(t *testing.T) {
 	}
 }
 
-func TestWebhookNonTextIsIgnored(t *testing.T) {
-	sender := &mockSender{}
-	r := buildTestRouter(t, &mockNLPService{}, sender, nil)
-	body := textPayload(t, "5511999999999", "audio", "")
+func TestWebhookAudioIsTranscribedAndProcessed(t *testing.T) {
+	sender := &mockSender{media: []byte("audio-bytes"), mediaMime: "audio/ogg"}
+	nlpMock := &mockNLPService{
+		intent:          domain.Intent{Name: domain.IntentUnknown},
+		transcribedText: "quais contatos tem sobrenome Silva?",
+	}
+	r := buildTestRouter(t, nlpMock, sender, nil)
+	body := audioPayload(t, "5511999999999")
 	w := postMetaPayload(t, r, body, true)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if sender.text != "" {
-		t.Errorf("expected no reply for non-text payload, got %q", sender.text)
+	if nlpMock.intent.RawText != "quais contatos tem sobrenome Silva?" {
+		t.Errorf("expected transcribed text to be parsed, got %q", nlpMock.intent.RawText)
+	}
+	if sender.text == "" {
+		t.Error("expected reply for audio payload")
 	}
 }
 

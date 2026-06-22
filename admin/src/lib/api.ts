@@ -44,18 +44,6 @@ export type AllowlistEntry = {
   sync_pending?: boolean;
 };
 
-export type WhatsAppStatus = {
-  instance: string;
-  state: string;
-};
-
-export type WhatsAppQRCode = {
-  instance: string;
-  code?: string;
-  base64?: string;
-  pairing_code?: string;
-};
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -145,14 +133,6 @@ export function listAllowlist() {
 export function saveAllowlist(item: AllowlistEntry) {
   const path = item.id ? `/admin/allowlist/${item.id}` : "/admin/allowlist";
   return request<AllowlistEntry>(path, { method: item.id ? "PUT" : "POST", body: JSON.stringify(item) });
-}
-
-export function getWhatsAppStatus() {
-  return request<WhatsAppStatus>("/admin/whatsapp/status");
-}
-
-export function generateWhatsAppQRCode() {
-  return request<WhatsAppQRCode>("/admin/whatsapp/qrcode", { method: "POST" });
 }
 
 export function listStages() {

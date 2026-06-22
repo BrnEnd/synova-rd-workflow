@@ -20,16 +20,8 @@ resource "aws_cloudwatch_log_group" "evolution" {
 
 resource "aws_security_group" "evolution" {
   name        = "${local.app_name}-evolution-sg"
-  description = "Public HTTP access for Evolution API and admin panel."
+  description = "Public HTTP access for the admin panel."
   vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    description = "Evolution API HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   ingress {
     description = "Admin panel HTTP"
@@ -108,7 +100,6 @@ resource "aws_instance" "evolution" {
   user_data = <<-EOF
     #!/bin/bash
     echo "ECS_CLUSTER=${aws_ecs_cluster.evolution.name}" >> /etc/ecs/ecs.config
-    mkdir -p /opt/evolution/postgres /opt/evolution/redis /opt/evolution/instances
   EOF
 
   root_block_device {
@@ -185,117 +176,11 @@ resource "aws_ecs_task_definition" "evolution" {
   family                   = "${local.app_name}-evolution"
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
-  cpu                      = "768"
-  memory                   = "768"
+  cpu                      = "256"
+  memory                   = "256"
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
-  volume {
-    name      = "evolution_postgres_data"
-    host_path = "/opt/evolution/postgres"
-  }
-
-  volume {
-    name      = "evolution_redis_data"
-    host_path = "/opt/evolution/redis"
-  }
-
-  volume {
-    name      = "evolution_instances"
-    host_path = "/opt/evolution/instances"
-  }
-
   container_definitions = jsonencode([
-    {
-      name              = "evolution-postgres"
-      image             = "postgres:16-alpine"
-      essential         = true
-      memoryReservation = 128
-      environment = [
-        { name = "POSTGRES_DB", value = "evolution" },
-        { name = "POSTGRES_USER", value = "evolution" },
-        { name = "POSTGRES_PASSWORD", value = local.effective_evolution_postgres_password }
-      ]
-      mountPoints = [
-        { sourceVolume = "evolution_postgres_data", containerPath = "/var/lib/postgresql/data" }
-      ]
-      healthCheck = {
-        command     = ["CMD-SHELL", "pg_isready -U evolution -d evolution"]
-        interval    = 10
-        timeout     = 5
-        retries     = 5
-        startPeriod = 30
-      }
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.evolution.name
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "postgres"
-        }
-      }
-    },
-    {
-      name              = "evolution-redis"
-      image             = "redis:7-alpine"
-      essential         = true
-      memoryReservation = 64
-      mountPoints = [
-        { sourceVolume = "evolution_redis_data", containerPath = "/data" }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.evolution.name
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "redis"
-        }
-      }
-    },
-    {
-      name              = "evolution-api"
-      image             = "evoapicloud/evolution-api:v2.3.7"
-      essential         = true
-      memoryReservation = 384
-      dependsOn = [
-        { containerName = "evolution-postgres", condition = "HEALTHY" },
-        { containerName = "evolution-redis", condition = "START" }
-      ]
-      links = ["evolution-postgres", "evolution-redis"]
-      portMappings = [
-        { containerPort = 8080, hostPort = 80, protocol = "tcp" }
-      ]
-      environment = [
-        { name = "SERVER_URL", value = local.effective_evolution_url },
-        { name = "AUTHENTICATION_API_KEY", value = local.effective_evolution_key },
-        { name = "DATABASE_ENABLED", value = "true" },
-        { name = "DATABASE_PROVIDER", value = "postgresql" },
-        { name = "DATABASE_CONNECTION_URI", value = "postgresql://evolution:${local.effective_evolution_postgres_password}@evolution-postgres:5432/evolution" },
-        { name = "DATABASE_CONNECTION_CLIENT_NAME", value = "synova_evolution" },
-        { name = "DATABASE_SAVE_DATA_INSTANCE", value = "true" },
-        { name = "DATABASE_SAVE_DATA_NEW_MESSAGE", value = "true" },
-        { name = "DATABASE_SAVE_MESSAGE_UPDATE", value = "true" },
-        { name = "DATABASE_SAVE_DATA_CONTACTS", value = "true" },
-        { name = "DATABASE_SAVE_DATA_CHATS", value = "true" },
-        { name = "CACHE_REDIS_ENABLED", value = "true" },
-        { name = "CACHE_REDIS_URI", value = "redis://evolution-redis:6379/1" },
-        { name = "CACHE_REDIS_PREFIX_KEY", value = "synova_evolution" },
-        { name = "CACHE_REDIS_SAVE_INSTANCES", value = "false" },
-        { name = "CACHE_LOCAL_ENABLED", value = "false" },
-        { name = "RABBITMQ_ENABLED", value = "false" },
-        { name = "WEBSOCKET_ENABLED", value = "false" }
-      ]
-      mountPoints = [
-        { sourceVolume = "evolution_instances", containerPath = "/evolution/instances" }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.evolution.name
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "evolution"
-        }
-      }
-    },
     {
       name              = "admin"
       image             = "${aws_ecr_repository.admin.repository_url}:latest"
