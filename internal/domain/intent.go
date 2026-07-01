@@ -7,6 +7,7 @@ const (
 	IntentGetContacts            IntentName = "get_contacts"
 	IntentGetDeals               IntentName = "get_deals"
 	IntentGetDeal                IntentName = "get_deal"
+	IntentGetDealSummary         IntentName = "get_deal_summary"
 	IntentGetDealContacts        IntentName = "get_deal_contacts"
 	IntentCreateContact          IntentName = "create_contact"
 	IntentCreateDeal             IntentName = "create_deal"

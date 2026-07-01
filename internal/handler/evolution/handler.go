@@ -313,6 +313,7 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 		return h.formatAndRememberScheduledTasks(sessionID, tasks)
 	}
 
+	h.applyActiveDeal(sessionID, &intent)
 	result, routeErr := h.router.RouteForActor(ctx, intent, actor)
 	if routeErr != nil {
 		// If disambiguation is needed, try auto-resolving using the active deal.
@@ -352,6 +353,37 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 		return nlp.ErrorResponse("servico de formatacao")
 	}
 	return formatted
+}
+
+func (h *Handler) applyActiveDeal(sessionID string, intent *domain.Intent) {
+	if !needsDealName(intent.Name) || strings.TrimSpace(intent.Parameters["deal_name"]) != "" {
+		return
+	}
+	active, ok := h.getActiveDeal(sessionID)
+	if !ok || strings.TrimSpace(active.Name) == "" {
+		return
+	}
+	if intent.Parameters == nil {
+		intent.Parameters = map[string]string{}
+	}
+	intent.Parameters["deal_name"] = active.Name
+}
+
+func needsDealName(name domain.IntentName) bool {
+	switch name {
+	case domain.IntentGetDeal,
+		domain.IntentGetDealSummary,
+		domain.IntentGetDealContacts,
+		domain.IntentGetDealActivities,
+		domain.IntentCreateDealActivity,
+		domain.IntentUpdateDeal,
+		domain.IntentMoveDealStage,
+		domain.IntentAssociateContactToDeal,
+		domain.IntentCreateScheduledTask:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Handler) startCreateDealFlow(sessionID string, intent domain.Intent) string {

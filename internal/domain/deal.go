@@ -13,6 +13,14 @@ type Deal struct {
 	UpdatedAt time.Time
 }
 
+// DealSummaryContext groups CRM data used to generate an executive deal summary.
+type DealSummaryContext struct {
+	Deal       Deal
+	Contacts   []Contact
+	Activities []Activity
+	OpenTasks  []Task
+}
+
 // DealOwner identifies the RD Station user responsible for a deal.
 type DealOwner struct {
 	ID    string

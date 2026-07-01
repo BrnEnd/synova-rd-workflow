@@ -55,11 +55,16 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 			Stage:          p["stage"],
 			Status:         p["status"],
 			OwnerName:      p["owner_name"],
+			UpdatedAfter:   p["updated_after"],
+			UpdatedBefore:  p["updated_before"],
 			AllowedOwnerID: owners,
 		})
 
 	case domain.IntentGetDeal:
 		return r.rdstation.GetDealForOwners(ctx, p["deal_name"], owners)
+
+	case domain.IntentGetDealSummary:
+		return r.rdstation.GetDealSummaryForOwners(ctx, p["deal_name"], owners)
 
 	case domain.IntentGetDealContacts:
 		return r.rdstation.GetDealContactsForOwners(ctx, p["deal_name"], owners)
@@ -147,6 +152,9 @@ func (r *Router) ResolveDealSelection(ctx context.Context, intent domain.Intent,
 	switch intent.Name {
 	case domain.IntentGetDeal:
 		return r.rdstation.GetDealByID(ctx, deal.ID)
+
+	case domain.IntentGetDealSummary:
+		return r.rdstation.GetDealSummaryByID(ctx, deal.ID)
 
 	case domain.IntentGetDealContacts:
 		return r.rdstation.GetDealContactsByID(ctx, deal.ID)

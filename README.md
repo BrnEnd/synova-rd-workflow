@@ -103,6 +103,7 @@ O NLP retorna intents estruturadas. As principais sao:
 | --- | --- |
 | `get_deals` | Lista negociacoes por nome, etapa, status ou responsavel. |
 | `get_deal` | Busca detalhes de uma negociacao especifica. |
+| `get_deal_summary` | Gera um resumo executivo com dados da negociacao, contatos, anotacoes e tarefas abertas. |
 | `get_deal_contacts` | Lista contatos de uma negociacao. |
 | `get_contacts` | Consulta contatos. |
 | `create_contact` | Cria contato. |
@@ -133,6 +134,7 @@ A relacao de equipe e definida no painel admin: vendedores apontam para um colab
 | --- | --- |
 | `OPENAI_API_KEY` | Chave da OpenAI usada pelo NLP. |
 | `OPENAI_MODEL` | Modelo usado para identificar intents e formatar respostas. |
+| `DEAL_SUMMARY_PROMPT_TEMPLATE` | Prompt opcional para ajustar o padrao dos resumos executivos de negociacoes. |
 | `RDSTATION_TOKEN` | Token da API RD Station CRM. |
 | `DYNAMODB_TABLE_NAME` | Tabela unica para conversas e dados admin. |
 | `EVOLUTION_BASE_URL` | URL base da Evolution API. |

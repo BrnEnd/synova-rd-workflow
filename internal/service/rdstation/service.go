@@ -3,6 +3,7 @@ package rdstation
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +32,8 @@ type GetDealsParams struct {
 	Stage          string
 	Status         string // "open", "won", "lost"
 	OwnerName      string
+	UpdatedAfter   string // YYYY-MM-DD, inclusivo
+	UpdatedBefore  string // YYYY-MM-DD, inclusivo
 	AllowedOwnerID map[string]struct{}
 }
 
@@ -204,6 +207,8 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 	}
 
 	deals := filterDealsByOwner(mapDeals(resp), params.AllowedOwnerID)
+	deals = filterDealsByUpdatedRange(deals, params.UpdatedAfter, params.UpdatedBefore)
+	sortDealsByUpdatedDesc(deals)
 	if strings.TrimSpace(params.OwnerName) == "" {
 		return deals, nil
 	}
@@ -358,6 +363,54 @@ func (s *Service) GetDealForOwners(ctx context.Context, dealName string, allowed
 	}
 
 	return s.GetDealByID(ctx, deal.ID)
+}
+
+// GetDealSummaryForOwners gathers deal details, contacts, annotations and open tasks.
+func (s *Service) GetDealSummaryForOwners(ctx context.Context, dealName string, allowedOwnerID map[string]struct{}) (domain.DealSummaryContext, error) {
+	deal, err := s.findSingleDeal(ctx, dealName, allowedOwnerID)
+	if err != nil {
+		return domain.DealSummaryContext{}, err
+	}
+
+	return s.GetDealSummaryByID(ctx, deal.ID)
+}
+
+// GetDealSummaryByID gathers all available CRM context for an executive summary.
+func (s *Service) GetDealSummaryByID(ctx context.Context, dealID string) (domain.DealSummaryContext, error) {
+	deal, err := s.GetDealByID(ctx, dealID)
+	if err != nil {
+		return domain.DealSummaryContext{}, err
+	}
+
+	contacts, err := s.GetDealContactsByID(ctx, deal.ID)
+	if err != nil {
+		return domain.DealSummaryContext{}, err
+	}
+	if len(contacts) == 0 {
+		contacts = deal.Contacts
+	}
+
+	activities, err := s.GetDealActivitiesByID(ctx, deal.ID)
+	if err != nil {
+		return domain.DealSummaryContext{}, err
+	}
+
+	open := false
+	taskResp, err := s.client.GetTasks(ctx, rdClient.GetTasksParams{Done: &open, DealID: deal.ID, Limit: 20})
+	if err != nil {
+		return domain.DealSummaryContext{}, err
+	}
+	tasks := make([]domain.Task, 0, len(taskResp))
+	for _, task := range taskResp {
+		tasks = append(tasks, mapTask(task))
+	}
+
+	return domain.DealSummaryContext{
+		Deal:       deal,
+		Contacts:   contacts,
+		Activities: activities,
+		OpenTasks:  tasks,
+	}, nil
 }
 
 // GetDealByID retrieves a single deal by its RD Station ID.
@@ -687,6 +740,64 @@ func filterDealsByOwnerName(deals []domain.Deal, ownerName string) []domain.Deal
 		}
 	}
 	return out
+}
+
+func filterDealsByUpdatedRange(deals []domain.Deal, updatedAfter, updatedBefore string) []domain.Deal {
+	after, hasAfter := parseDateOnly(updatedAfter)
+	before, hasBefore := parseDateOnly(updatedBefore)
+	if !hasAfter && !hasBefore {
+		return deals
+	}
+
+	out := make([]domain.Deal, 0, len(deals))
+	for _, deal := range deals {
+		if deal.UpdatedAt.IsZero() {
+			continue
+		}
+		updated := dateOnly(deal.UpdatedAt)
+		if hasAfter && updated.Before(after) {
+			continue
+		}
+		if hasBefore && updated.After(before) {
+			continue
+		}
+		out = append(out, deal)
+	}
+	return out
+}
+
+func sortDealsByUpdatedDesc(deals []domain.Deal) {
+	sort.SliceStable(deals, func(i, j int) bool {
+		left := deals[i].UpdatedAt
+		right := deals[j].UpdatedAt
+		switch {
+		case left.IsZero() && right.IsZero():
+			return false
+		case left.IsZero():
+			return false
+		case right.IsZero():
+			return true
+		default:
+			return left.After(right)
+		}
+	})
+}
+
+func parseDateOnly(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
+}
+
+func dateOnly(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func closestOwnerNames(deals []domain.Deal, target string, limit int) []string {

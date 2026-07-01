@@ -25,6 +25,8 @@ func TestIntentNames_AllDefined(t *testing.T) {
 	intents := []domain.IntentName{
 		domain.IntentGetContacts,
 		domain.IntentGetDeals,
+		domain.IntentGetDeal,
+		domain.IntentGetDealSummary,
 		domain.IntentCreateContact,
 		domain.IntentCreateDeal,
 		domain.IntentUpdateDeal,
@@ -41,7 +43,7 @@ func TestIntentNames_AllDefined(t *testing.T) {
 func TestRDSvcParams_Compile(_ *testing.T) {
 	_ = rdSvc.GetContactsParams{Name: "test", Email: "e@e.com", Phone: "+551199"}
 	_ = rdSvc.CreateContactParams{Name: "Test", Email: "e@e.com"}
-	_ = rdSvc.GetDealsParams{Name: "deal", Stage: "Proposta", Status: "open"}
+	_ = rdSvc.GetDealsParams{Name: "deal", Stage: "Proposta", Status: "open", UpdatedAfter: "2026-06-13", UpdatedBefore: "2026-06-23"}
 	_ = rdSvc.CreateDealParams{Name: "deal", ContactName: "João", Stage: "Proposta"}
 	_ = rdSvc.UpdateDealParams{DealName: "deal", Field: "name", Value: "novo"}
 }
@@ -85,6 +87,42 @@ func TestSellerOnlySeesOwnDeals(t *testing.T) {
 	}
 	if len(deals) != 1 || deals[0].ID != "d1" {
 		t.Fatalf("expected only seller deal, got %#v", deals)
+	}
+}
+
+func TestRouteGetDealsPassesUpdatedRange(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deals" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		resp := rdClient.DealsListResponse{
+			Deals: []rdClient.DealResponse{
+				{ID: "d1", Name: "Crossfix fora", UpdatedAt: "2026-06-12T10:00:00Z"},
+				{ID: "d2", Name: "Crossfix dentro", UpdatedAt: "2026-06-20T10:00:00Z"},
+			},
+			Total: 2,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	router := intentRouter.New(rdSvc.New(rdClient.NewWithBaseURL("token", srv.URL)))
+	result, err := router.RouteForActor(context.Background(), domain.Intent{
+		Name: domain.IntentGetDeals,
+		Parameters: map[string]string{
+			"name":           "Crossfix",
+			"updated_after":  "2026-06-13",
+			"updated_before": "2026-06-23",
+		},
+	}, intentRouter.Actor{Role: "director"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deals := result.([]domain.Deal)
+	if len(deals) != 1 || deals[0].ID != "d2" {
+		t.Fatalf("expected only deal in updated range, got %#v", deals)
 	}
 }
 
