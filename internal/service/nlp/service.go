@@ -496,7 +496,7 @@ func ErrorResponse(service string) string {
 
 func buildMessages(history []domain.Message, current string) []openaiClient.ChatMessage {
 	msgs := make([]openaiClient.ChatMessage, 0, len(history)+2)
-	msgs = append(msgs, openaiClient.ChatMessage{Role: "system", Content: systemPrompt})
+	msgs = append(msgs, openaiClient.ChatMessage{Role: "system", Content: systemPrompt + "\n\n" + currentDateContext()})
 
 	for _, m := range history {
 		msgs = append(msgs, openaiClient.ChatMessage{Role: m.Role, Content: m.Content})
@@ -504,4 +504,12 @@ func buildMessages(history []domain.Message, current string) []openaiClient.Chat
 
 	msgs = append(msgs, openaiClient.ChatMessage{Role: "user", Content: current})
 	return msgs
+}
+
+func currentDateContext() string {
+	loc, err := time.LoadLocation("America/Sao_Paulo")
+	if err != nil {
+		loc = time.FixedZone("America/Sao_Paulo", -3*60*60)
+	}
+	return "Contexto temporal: hoje é " + time.Now().In(loc).Format("2006-01-02") + " no fuso America/Sao_Paulo."
 }

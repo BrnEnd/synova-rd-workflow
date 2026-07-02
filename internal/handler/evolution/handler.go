@@ -251,6 +251,7 @@ func (h *Handler) processTextMessage(ctx context.Context, inbound inboundTextMes
 	}
 
 	if intent.Name == domain.IntentCreateScheduledTask {
+		h.applyActiveDeal(session.ID, &intent)
 		reply := h.startScheduledTaskFlow(ctx, session.ID, intent, h.actorForPhone(ctx, from))
 		_ = h.conv.SaveUserMessage(ctx, session.ID, msg, string(intent.Name))
 		_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
@@ -343,8 +344,12 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 	}
 
 	// Store deal lists so the user can select by number.
-	if deals, ok := result.([]domain.Deal); ok && len(deals) > 1 {
-		h.setPendingList(sessionID, deals)
+	if deals, ok := result.([]domain.Deal); ok {
+		if len(deals) == 1 {
+			h.setActiveDeal(sessionID, deals[0])
+		} else if len(deals) > 1 {
+			h.setPendingList(sessionID, deals)
+		}
 	}
 
 	formatted, fmtErr := h.nlpSvc.FormatResponse(ctx, intent, result)

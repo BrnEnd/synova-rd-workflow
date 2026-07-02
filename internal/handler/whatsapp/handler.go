@@ -301,6 +301,7 @@ func (h *Handler) processTextMessage(c *gin.Context, inbound inboundTextMessage)
 	}
 
 	if intent.Name == domain.IntentCreateScheduledTask {
+		h.applyActiveDeal(ctx, session.ID, &intent)
 		reply := h.startScheduledTaskFlow(ctx, session.ID, intent, actor)
 		_ = h.conv.SaveUserMessage(ctx, session.ID, msg, string(intent.Name))
 		_ = h.conv.SaveAssistantMessage(ctx, session.ID, reply)
@@ -391,8 +392,12 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 		h.setActiveDeal(sessionID, deal)
 	}
 
-	if deals, ok := result.([]domain.Deal); ok && len(deals) > 1 {
-		h.setPendingList(sessionID, deals)
+	if deals, ok := result.([]domain.Deal); ok {
+		if len(deals) == 1 {
+			h.setActiveDeal(sessionID, deals[0])
+		} else if len(deals) > 1 {
+			h.setPendingList(sessionID, deals)
+		}
 	}
 
 	formatted, fmtErr := h.nlpSvc.FormatResponse(ctx, intent, result)

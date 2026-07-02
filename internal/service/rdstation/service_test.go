@@ -142,6 +142,55 @@ func TestGetDeals_FiltersByUpdatedRangeInclusive(t *testing.T) {
 	}
 }
 
+func TestGetDeals_FiltersByUpdatedRangeAcrossPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deals" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("next_page") == "cursor-2" {
+			_ = json.NewEncoder(w).Encode(rdClient.DealsListResponse{
+				Deals: []rdClient.DealResponse{
+					{ID: "inside", Name: "Crossfix pagina 2", UpdatedAt: "2026-06-20T10:00:00Z"},
+				},
+				Total: 201,
+			})
+			return
+		}
+
+		deals := make([]rdClient.DealResponse, 200)
+		for i := range deals {
+			deals[i] = rdClient.DealResponse{
+				ID:        "before-" + strconv.Itoa(i),
+				Name:      "Crossfix fora",
+				UpdatedAt: "2026-06-01T10:00:00Z",
+			}
+		}
+		_ = json.NewEncoder(w).Encode(rdClient.DealsListResponse{
+			Deals:    deals,
+			HasMore:  true,
+			NextPage: "cursor-2",
+			Total:    201,
+		})
+	}))
+	defer srv.Close()
+
+	client := rdClient.NewWithBaseURL("key", srv.URL)
+	svc := rdSvc.New(client)
+
+	deals, err := svc.GetDeals(context.Background(), rdSvc.GetDealsParams{
+		Name:          "Crossfix",
+		UpdatedAfter:  "2026-06-13",
+		UpdatedBefore: "2026-06-23",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deals) != 1 || deals[0].ID != "inside" {
+		t.Fatalf("expected paginated deal inside date range, got %#v", deals)
+	}
+}
+
 func TestGetDeals_OrdersByMostRecentlyUpdated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := rdClient.DealsListResponse{

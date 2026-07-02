@@ -70,8 +70,10 @@ type DealResponse struct {
 }
 
 type DealsListResponse struct {
-	Deals []DealResponse `json:"deals"`
-	Total int            `json:"total"`
+	Deals    []DealResponse `json:"deals"`
+	HasMore  bool           `json:"has_more"`
+	NextPage string         `json:"next_page"`
+	Total    int            `json:"total"`
 }
 
 type DealContactsListResponse struct {
@@ -149,6 +151,9 @@ type GetDealsParams struct {
 	Name        string
 	DealStageID string
 	Win         *bool
+	Page        int
+	NextPage    string
+	Limit       int
 }
 
 type GetTasksParams struct {
@@ -363,7 +368,58 @@ func (c *Client) CreateContact(ctx context.Context, params CreateContactParams) 
 
 // GetDeals fetches deals from RD Station.
 func (c *Client) GetDeals(ctx context.Context, params GetDealsParams) ([]DealResponse, error) {
-	q := url.Values{"limit": []string{"200"}}
+	limit := params.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+
+	page := params.Page
+	if page <= 0 {
+		page = 1
+	}
+	nextPage := strings.TrimSpace(params.NextPage)
+	deals := make([]DealResponse, 0)
+
+	for {
+		pageParams := params
+		pageParams.Limit = limit
+		pageParams.Page = page
+		pageParams.NextPage = nextPage
+
+		result, err := c.getDealsPage(ctx, pageParams)
+		if err != nil {
+			return nil, err
+		}
+		deals = append(deals, result.Deals...)
+
+		if result.Total > 0 && len(deals) >= result.Total {
+			break
+		}
+		if result.NextPage != "" {
+			nextPage = result.NextPage
+			page++
+			continue
+		}
+		if !result.HasMore || len(result.Deals) < limit {
+			break
+		}
+		page++
+	}
+
+	return deals, nil
+}
+
+func (c *Client) getDealsPage(ctx context.Context, params GetDealsParams) (DealsListResponse, error) {
+	limit := params.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	q := url.Values{"limit": []string{strconv.Itoa(limit)}}
+	if params.NextPage != "" {
+		q.Set("next_page", params.NextPage)
+	} else if params.Page > 0 {
+		q.Set("page", strconv.Itoa(params.Page))
+	}
 	if params.Name != "" {
 		q.Set("name", params.Name)
 	}
@@ -374,22 +430,17 @@ func (c *Client) GetDeals(ctx context.Context, params GetDealsParams) ([]DealRes
 		q.Set("win", strconv.FormatBool(*params.Win))
 	}
 
-	path := "/deals"
-	if len(q) > 0 {
-		path += "?" + q.Encode()
-	}
-
-	data, err := c.do(ctx, http.MethodGet, path, nil)
+	data, err := c.do(ctx, http.MethodGet, "/deals?"+q.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return DealsListResponse{}, err
 	}
 
 	var result DealsListResponse
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("rdstation GetDeals unmarshal: %w", err)
+		return DealsListResponse{}, fmt.Errorf("rdstation GetDeals unmarshal: %w", err)
 	}
 
-	return result.Deals, nil
+	return result, nil
 }
 
 // GetTasks fetches scheduled RD Station tasks.
