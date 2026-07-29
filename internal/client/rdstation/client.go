@@ -42,13 +42,23 @@ type ContactsListResponse struct {
 }
 
 type DealStageResponse struct {
-	ID   string `json:"_id"`
-	Name string `json:"name"`
+	ID             string `json:"_id"`
+	Name           string `json:"name"`
+	DealPipelineID string `json:"deal_pipeline_id"`
 }
 
 type DealContactResponse struct {
 	ID   string `json:"_id"`
 	Name string `json:"name"`
+}
+
+type DealProductResponse struct {
+	ID          string  `json:"_id"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Price       float64 `json:"price"`
+	Total       float64 `json:"total"`
 }
 
 type DealUserResponse struct {
@@ -62,6 +72,7 @@ type DealResponse struct {
 	Name      string                `json:"name"`
 	DealStage DealStageResponse     `json:"deal_stage"`
 	Contacts  []DealContactResponse `json:"contacts"`
+	Products  []DealProductResponse `json:"deal_products"`
 	User      DealUserResponse      `json:"user"`
 	Owner     DealUserResponse      `json:"owner"`
 	DealOwner DealUserResponse      `json:"deal_owner"`
@@ -607,10 +618,7 @@ func (c *Client) UpdateContact(ctx context.Context, contactID string, params Upd
 }
 
 // GetDealStages retrieves all pipeline stages from RD Station.
-func (c *Client) GetDealStages(ctx context.Context) ([]struct {
-	ID   string
-	Name string
-}, error) {
+func (c *Client) GetDealStages(ctx context.Context) ([]DealStageResponse, error) {
 	data, err := c.do(ctx, http.MethodGet, "/deal_stages", nil)
 	if err != nil {
 		return nil, err
@@ -621,14 +629,12 @@ func (c *Client) GetDealStages(ctx context.Context) ([]struct {
 		return nil, fmt.Errorf("rdstation GetDealStages unmarshal: %w", err)
 	}
 
-	stages := make([]struct {
-		ID   string
-		Name string
-	}, len(result.DealStages))
+	stages := make([]DealStageResponse, len(result.DealStages))
 
 	for i, s := range result.DealStages {
 		stages[i].ID = s.ID
 		stages[i].Name = s.Name
+		stages[i].DealPipelineID = s.DealPipelineID
 	}
 
 	return stages, nil

@@ -46,16 +46,18 @@ type EvolutionAdminClient interface {
 	ConnectQRCode(ctx context.Context) (domain.WhatsAppQRCode, error)
 }
 
+type WhatsAppTemplateClient interface {
+	SendTemplateMessage(ctx context.Context, to string, templateName string, languageCode string, bodyParams []string) error
+}
+
 type RDStationClient interface {
-	GetDealStages(ctx context.Context) ([]struct {
-		ID   string
-		Name string
-	}, error)
+	GetDealStages(ctx context.Context) ([]rdClient.DealStageResponse, error)
 }
 
 type ResourceService struct {
 	store     AdminStore
 	evolution EvolutionAdminClient
+	whatsapp  WhatsAppTemplateClient
 	rd        DealClient
 }
 
@@ -105,8 +107,8 @@ type ScheduledRDPendingTask struct {
 	ResponsibleNames []string `json:"responsible_names"`
 }
 
-func NewResourceService(store AdminStore, evolution EvolutionAdminClient, rd DealClient) *ResourceService {
-	return &ResourceService{store: store, evolution: evolution, rd: rd}
+func NewResourceService(store AdminStore, evolution EvolutionAdminClient, whatsapp WhatsAppTemplateClient, rd DealClient) *ResourceService {
+	return &ResourceService{store: store, evolution: evolution, whatsapp: whatsapp, rd: rd}
 }
 
 func (s *ResourceService) ListCollaborators(ctx context.Context, activeOnly bool) ([]domain.Collaborator, error) {
@@ -178,9 +180,20 @@ func (s *ResourceService) UpsertAlert(ctx context.Context, a domain.Alert) (doma
 	a.DealStageID = strings.TrimSpace(a.DealStageID)
 	a.DealStageName = strings.TrimSpace(a.DealStageName)
 	a.MessageTemplate = strings.TrimSpace(a.MessageTemplate)
+	a.NotificationMode = normalizeNotificationMode(a.NotificationMode)
+	a.WhatsAppTemplateName = strings.TrimSpace(a.WhatsAppTemplateName)
+	a.WhatsAppTemplateLang = strings.TrimSpace(a.WhatsAppTemplateLang)
 	a.RecipientIDs = uniqueNonEmptyStrings(a.RecipientIDs)
 	if a.RepeatIntervalHours <= 0 {
 		a.RepeatIntervalHours = 48
+	}
+	if a.NotificationMode == "whatsapp_template" {
+		if a.WhatsAppTemplateName == "" {
+			a.WhatsAppTemplateName = "rdnotification"
+		}
+		if a.WhatsAppTemplateLang == "" {
+			a.WhatsAppTemplateLang = "pt_BR"
+		}
 	}
 	if a.Name == "" || a.DealStageID == "" || a.TimeThresholdHours <= 0 || a.RepeatIntervalHours <= 0 || a.MessageTemplate == "" || len(a.RecipientIDs) == 0 {
 		return domain.Alert{}, ErrInvalidInput
@@ -193,6 +206,9 @@ func (s *ResourceService) UpsertAlert(ctx context.Context, a domain.Alert) (doma
 		}
 		if c.ID == "" {
 			return domain.Alert{}, fmt.Errorf("%w: recipient", ErrInvalidInput)
+		}
+		if a.NotificationMode == "whatsapp_template" && normalizeRole(c.Role) != "director" {
+			return domain.Alert{}, fmt.Errorf("%w: recipient_not_director", ErrInvalidInput)
 		}
 		if c.Active {
 			activeRecipients++
@@ -234,7 +250,7 @@ func (s *ResourceService) RunAlertNow(ctx context.Context, id string) (AlertRunR
 	if s.rd == nil {
 		return AlertRunResult{}, fmt.Errorf("%w: rdstation", ErrInvalidInput)
 	}
-	return ExecuteAlert(ctx, s.store, s.rd, s.evolution, alert, AlertExecutionOptions{Force: true})
+	return ExecuteAlert(ctx, s.store, s.rd, s.evolution, s.whatsapp, alert, AlertExecutionOptions{Force: true})
 }
 
 func (s *ResourceService) ListScheduledTasks(ctx context.Context) ([]ScheduledTaskSummary, error) {
@@ -530,6 +546,17 @@ func normalizeRole(role string) string {
 		return "supervisor"
 	case "seller", "vendedor", "pj", "pf":
 		return "seller"
+	default:
+		return ""
+	}
+}
+
+func normalizeNotificationMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "text":
+		return "text"
+	case "whatsapp_template", "template", "official_template":
+		return "whatsapp_template"
 	default:
 		return ""
 	}

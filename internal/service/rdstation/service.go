@@ -29,6 +29,7 @@ type CreateContactParams struct {
 // GetDealsParams maps intent parameters to the deals query.
 type GetDealsParams struct {
 	Name           string
+	CustomerName   string
 	Stage          string
 	Status         string // "open", "won", "lost"
 	OwnerName      string
@@ -39,13 +40,21 @@ type GetDealsParams struct {
 
 // CreateDealParams holds required fields to create a deal.
 type CreateDealParams struct {
-	Name        string
-	ContactName string
-	Stage       string
-	OwnerName   string
-	ProductName string
-	Notes       string
-	UserID      string
+	Name            string
+	Company         string
+	ContactName     string
+	Pipeline        string
+	Stage           string
+	OwnerName       string
+	ProductName     string
+	Notes           string
+	UserID          string
+	FollowUpSubject string
+	FollowUpType    string
+	FollowUpDate    string
+	FollowUpHour    string
+	FollowUpNotes   string
+	IdempotencyKey  string
 }
 
 // UpdateDealParams holds fields to update a deal.
@@ -58,12 +67,27 @@ type UpdateDealParams struct {
 
 type CreateScheduledTaskParams struct {
 	DealName       string
+	Company        string
+	ProductName    string
+	Pipeline       string
+	Stage          string
 	Subject        string
 	Type           string
 	Date           string
 	Hour           string
 	Notes          string
 	UserID         string
+	OwnerName      string
+	AllowedOwnerID map[string]struct{}
+	IdempotencyKey string
+}
+
+type ResolveDealParams struct {
+	DealName       string
+	Company        string
+	ProductName    string
+	Stage          string
+	Pipeline       string
 	OwnerName      string
 	AllowedOwnerID map[string]struct{}
 }
@@ -84,6 +108,16 @@ type StageNotFoundError struct {
 
 func (e *StageNotFoundError) Error() string {
 	return fmt.Sprintf("stage not found; available: %s", strings.Join(e.Available, ", "))
+}
+
+// AmbiguousStageError is returned when a stage name exists in multiple pipelines.
+type AmbiguousStageError struct {
+	Name   string
+	Stages []domain.Stage
+}
+
+func (e *AmbiguousStageError) Error() string {
+	return fmt.Sprintf("stage '%s' exists in multiple pipelines", e.Name)
 }
 
 // DealNotFoundError is returned when no deal matches the given name.
@@ -184,6 +218,9 @@ func (s *Service) CreateContact(ctx context.Context, params CreateContactParams)
 // GetDeals fetches deals from RD Station.
 func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain.Deal, error) {
 	clientParams := rdClient.GetDealsParams{Name: params.Name}
+	if strings.TrimSpace(params.CustomerName) != "" {
+		clientParams.Name = ""
+	}
 
 	if params.Status == "won" {
 		t := true
@@ -194,7 +231,7 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 	}
 
 	if params.Stage != "" {
-		stageID, err := s.findStageID(ctx, params.Stage)
+		stageID, err := s.findStageIDInPipeline(ctx, params.Stage, "")
 		if err != nil {
 			return nil, err
 		}
@@ -207,6 +244,9 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 	}
 
 	deals := filterDealsByOwner(mapDeals(resp), params.AllowedOwnerID)
+	if strings.TrimSpace(params.CustomerName) != "" {
+		deals = filterDealsByCustomerName(deals, params.CustomerName)
+	}
 	deals = filterDealsByUpdatedRange(deals, params.UpdatedAfter, params.UpdatedBefore)
 	sortDealsByUpdatedDesc(deals)
 	if strings.TrimSpace(params.OwnerName) == "" {
@@ -220,27 +260,56 @@ func (s *Service) GetDeals(ctx context.Context, params GetDealsParams) ([]domain
 }
 
 // CreateDeal creates a new deal in RD Station.
-func (s *Service) CreateDeal(ctx context.Context, params CreateDealParams) (domain.Deal, error) {
+func (s *Service) CreateDeal(ctx context.Context, params CreateDealParams) (domain.DealCreationResult, error) {
+	if existing, ok, err := s.findExistingDealForCreate(ctx, params); err != nil {
+		return domain.DealCreationResult{}, err
+	} else if ok {
+		result := domain.DealCreationResult{Deal: existing, Idempotent: true}
+		if strings.TrimSpace(params.FollowUpSubject) != "" {
+			task, taskErr := s.CreateScheduledTaskForDeal(ctx, existing, CreateScheduledTaskParams{
+				Subject:        params.FollowUpSubject,
+				Type:           params.FollowUpType,
+				Date:           params.FollowUpDate,
+				Hour:           params.FollowUpHour,
+				Notes:          params.FollowUpNotes,
+				UserID:         params.UserID,
+				OwnerName:      params.OwnerName,
+				IdempotencyKey: params.IdempotencyKey,
+			})
+			if taskErr != nil {
+				result.TaskError = taskErr.Error()
+			} else {
+				result.Task = task
+			}
+		}
+		return result, nil
+	}
+
 	clientParams := rdClient.CreateDealParams{
 		Name:   params.Name,
 		UserID: params.UserID,
 	}
 
 	if params.Stage != "" {
-		stageID, err := s.findStageID(ctx, params.Stage)
+		stageID, err := s.findStageIDInPipeline(ctx, params.Stage, params.Pipeline)
 		if err != nil {
-			return domain.Deal{}, err
+			return domain.DealCreationResult{}, err
 		}
 		clientParams.DealStageID = stageID
 	}
 
-	if params.ContactName != "" {
-		contacts, err := s.client.GetContacts(ctx, rdClient.GetContactsParams{Name: params.ContactName})
+	contactName := strings.TrimSpace(params.ContactName)
+	if contactName == "" {
+		contactName = strings.TrimSpace(params.Company)
+	}
+	if contactName != "" {
+		contacts, err := s.client.GetContacts(ctx, rdClient.GetContactsParams{Name: contactName})
 		if err != nil {
-			return domain.Deal{}, fmt.Errorf("rdstation.CreateDeal search contact: %w", err)
+			return domain.DealCreationResult{}, fmt.Errorf("rdstation.CreateDeal search contact: %w", err)
 		}
+		contacts = exactContactsByName(contacts, contactName)
 		if len(contacts) == 0 {
-			return domain.Deal{}, &ContactNotFoundError{Name: params.ContactName, Suggestions: s.suggestContactNames(ctx, params.ContactName, 5)}
+			return domain.DealCreationResult{}, &ContactNotFoundError{Name: contactName, Suggestions: s.suggestContactNames(ctx, contactName, 5)}
 		}
 		clientParams.ContactIDs = []string{contacts[0].ID}
 	}
@@ -248,10 +317,10 @@ func (s *Service) CreateDeal(ctx context.Context, params CreateDealParams) (doma
 	if params.OwnerName != "" {
 		owner, suggestions, err := s.findOwner(ctx, params.OwnerName)
 		if err != nil {
-			return domain.Deal{}, err
+			return domain.DealCreationResult{}, err
 		}
 		if owner.ID == "" {
-			return domain.Deal{}, &OwnerNotFoundError{Name: params.OwnerName, Suggestions: suggestions}
+			return domain.DealCreationResult{}, &OwnerNotFoundError{Name: params.OwnerName, Suggestions: suggestions}
 		}
 		clientParams.UserID = owner.ID
 	}
@@ -268,18 +337,80 @@ func (s *Service) CreateDeal(ctx context.Context, params CreateDealParams) (doma
 
 	resp, err := s.client.CreateDeal(ctx, clientParams)
 	if err != nil {
-		return domain.Deal{}, err
+		return domain.DealCreationResult{}, err
 	}
 
-	return domain.Deal{
+	deal := domain.Deal{
 		ID:   resp.ID,
 		Name: resp.Name,
 		Stage: domain.Stage{
-			ID:   resp.DealStage.ID,
-			Name: resp.DealStage.Name,
+			ID:         resp.DealStage.ID,
+			Name:       resp.DealStage.Name,
+			PipelineID: resp.DealStage.DealPipelineID,
 		},
-		Owner: mapOwner(resp),
-	}, nil
+		Owner:    mapOwner(resp),
+		Contacts: mapDealContacts(resp.Contacts),
+		Products: mapDealProducts(resp.Products),
+	}
+	result := domain.DealCreationResult{Deal: deal}
+	if strings.TrimSpace(params.FollowUpSubject) != "" {
+		task, taskErr := s.CreateScheduledTaskForDeal(ctx, deal, CreateScheduledTaskParams{
+			Subject:        params.FollowUpSubject,
+			Type:           params.FollowUpType,
+			Date:           params.FollowUpDate,
+			Hour:           params.FollowUpHour,
+			Notes:          params.FollowUpNotes,
+			UserID:         params.UserID,
+			OwnerName:      params.OwnerName,
+			IdempotencyKey: params.IdempotencyKey,
+		})
+		if taskErr != nil {
+			result.TaskError = taskErr.Error()
+		} else {
+			result.Task = task
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) findExistingDealForCreate(ctx context.Context, params CreateDealParams) (domain.Deal, bool, error) {
+	name := strings.TrimSpace(params.Name)
+	if name == "" {
+		return domain.Deal{}, false, nil
+	}
+	resp, err := s.client.GetDeals(ctx, rdClient.GetDealsParams{Name: name})
+	if err != nil {
+		return domain.Deal{}, false, fmt.Errorf("rdstation.findExistingDealForCreate: %w", err)
+	}
+	deals := mapDeals(resp)
+	exact := make([]domain.Deal, 0)
+	normalizedName := normalizeSearchText(name)
+	for _, deal := range deals {
+		if normalizeSearchText(deal.Name) == normalizedName {
+			exact = append(exact, deal)
+		}
+	}
+	if len(exact) == 0 {
+		return domain.Deal{}, false, nil
+	}
+	if strings.TrimSpace(params.Company) != "" {
+		exact = filterDealsByCustomerName(exact, params.Company)
+	}
+	if strings.TrimSpace(params.ProductName) != "" {
+		exact = filterDealsByProductName(exact, params.ProductName)
+	}
+	if strings.TrimSpace(params.Stage) != "" {
+		stageID, err := s.findStageIDInPipeline(ctx, params.Stage, params.Pipeline)
+		if err != nil {
+			return domain.Deal{}, false, err
+		}
+		exact = filterDealsByStageID(exact, stageID)
+	}
+	if len(exact) == 0 {
+		return domain.Deal{}, false, nil
+	}
+	sortDealsByUpdatedDesc(exact)
+	return exact[0], true, nil
 }
 
 // UpdateDeal updates a field on a deal identified by name.
@@ -294,7 +425,7 @@ func (s *Service) UpdateDeal(ctx context.Context, params UpdateDealParams) (doma
 	case "name", "nome":
 		updateParams.Name = params.Value
 	case "stage", "estágio", "estagio":
-		stageID, stageErr := s.findStageID(ctx, params.Value)
+		stageID, stageErr := s.findStageIDInPipeline(ctx, params.Value, "")
 		if stageErr != nil {
 			return domain.Deal{}, stageErr
 		}
@@ -312,8 +443,9 @@ func (s *Service) UpdateDeal(ctx context.Context, params UpdateDealParams) (doma
 		ID:   resp.ID,
 		Name: resp.Name,
 		Stage: domain.Stage{
-			ID:   resp.DealStage.ID,
-			Name: resp.DealStage.Name,
+			ID:         resp.DealStage.ID,
+			Name:       resp.DealStage.Name,
+			PipelineID: resp.DealStage.DealPipelineID,
 		},
 		Owner: mapOwner(resp),
 	}, nil
@@ -330,7 +462,7 @@ func (s *Service) MoveDealStageForOwners(ctx context.Context, dealName, targetSt
 		return domain.Deal{}, err
 	}
 
-	stageID, err := s.findStageID(ctx, targetStageName)
+	stageID, err := s.findStageIDInPipeline(ctx, targetStageName, "")
 	if err != nil {
 		return domain.Deal{}, err
 	}
@@ -344,8 +476,9 @@ func (s *Service) MoveDealStageForOwners(ctx context.Context, dealName, targetSt
 		ID:   resp.ID,
 		Name: resp.Name,
 		Stage: domain.Stage{
-			ID:   resp.DealStage.ID,
-			Name: resp.DealStage.Name,
+			ID:         resp.DealStage.ID,
+			Name:       resp.DealStage.Name,
+			PipelineID: resp.DealStage.DealPipelineID,
 		},
 		Owner: mapOwner(resp),
 	}, nil
@@ -375,6 +508,14 @@ func (s *Service) GetDealSummaryForOwners(ctx context.Context, dealName string, 
 	return s.GetDealSummaryByID(ctx, deal.ID)
 }
 
+func (s *Service) GetDealSummaryResolved(ctx context.Context, params ResolveDealParams) (domain.DealSummaryContext, error) {
+	deal, err := s.resolveDealForAction(ctx, params)
+	if err != nil {
+		return domain.DealSummaryContext{}, err
+	}
+	return s.GetDealSummaryByID(ctx, deal.ID)
+}
+
 // GetDealSummaryByID gathers all available CRM context for an executive summary.
 func (s *Service) GetDealSummaryByID(ctx context.Context, dealID string) (domain.DealSummaryContext, error) {
 	deal, err := s.GetDealByID(ctx, dealID)
@@ -396,20 +537,31 @@ func (s *Service) GetDealSummaryByID(ctx context.Context, dealID string) (domain
 	}
 
 	open := false
-	taskResp, err := s.client.GetTasks(ctx, rdClient.GetTasksParams{Done: &open, DealID: deal.ID, Limit: 20})
+	openResp, err := s.client.GetTasks(ctx, rdClient.GetTasksParams{Done: &open, DealID: deal.ID, Limit: 20})
 	if err != nil {
 		return domain.DealSummaryContext{}, err
 	}
-	tasks := make([]domain.Task, 0, len(taskResp))
-	for _, task := range taskResp {
-		tasks = append(tasks, mapTask(task))
+	openTasks := make([]domain.Task, 0, len(openResp))
+	for _, task := range openResp {
+		openTasks = append(openTasks, mapTask(task))
+	}
+
+	done := true
+	doneResp, err := s.client.GetTasks(ctx, rdClient.GetTasksParams{Done: &done, DealID: deal.ID, Limit: 20})
+	if err != nil {
+		return domain.DealSummaryContext{}, err
+	}
+	completedTasks := make([]domain.Task, 0, len(doneResp))
+	for _, task := range doneResp {
+		completedTasks = append(completedTasks, mapTask(task))
 	}
 
 	return domain.DealSummaryContext{
-		Deal:       deal,
-		Contacts:   contacts,
-		Activities: activities,
-		OpenTasks:  tasks,
+		Deal:           deal,
+		Contacts:       contacts,
+		Activities:     activities,
+		OpenTasks:      openTasks,
+		CompletedTasks: completedTasks,
 	}, nil
 }
 
@@ -420,20 +572,17 @@ func (s *Service) GetDealByID(ctx context.Context, dealID string) (domain.Deal, 
 		return domain.Deal{}, err
 	}
 
-	contacts := make([]domain.Contact, 0, len(resp.Contacts))
-	for _, c := range resp.Contacts {
-		contacts = append(contacts, domain.Contact{ID: c.ID, Name: c.Name})
-	}
-
 	return domain.Deal{
 		ID:   resp.ID,
 		Name: resp.Name,
 		Stage: domain.Stage{
-			ID:   resp.DealStage.ID,
-			Name: resp.DealStage.Name,
+			ID:         resp.DealStage.ID,
+			Name:       resp.DealStage.Name,
+			PipelineID: resp.DealStage.DealPipelineID,
 		},
 		Owner:     mapOwner(resp),
-		Contacts:  contacts,
+		Contacts:  mapDealContacts(resp.Contacts),
+		Products:  mapDealProducts(resp.Products),
 		CreatedAt: parseRDTime(resp.CreatedAt),
 		UpdatedAt: parseRDTime(resp.UpdatedAt),
 	}, nil
@@ -539,24 +688,28 @@ func (s *Service) AssociateContactToDeal(ctx context.Context, dealName, contactN
 		return domain.Deal{}, err
 	}
 
-	dealContacts := make([]domain.Contact, 0, len(resp.Contacts))
-	for _, c := range resp.Contacts {
-		dealContacts = append(dealContacts, domain.Contact{ID: c.ID, Name: c.Name})
-	}
-
 	return domain.Deal{
 		ID:        resp.ID,
 		Name:      resp.Name,
-		Stage:     domain.Stage{ID: resp.DealStage.ID, Name: resp.DealStage.Name},
+		Stage:     domain.Stage{ID: resp.DealStage.ID, Name: resp.DealStage.Name, PipelineID: resp.DealStage.DealPipelineID},
 		Owner:     mapOwner(resp),
-		Contacts:  dealContacts,
+		Contacts:  mapDealContacts(resp.Contacts),
+		Products:  mapDealProducts(resp.Products),
 		CreatedAt: parseRDTime(resp.CreatedAt),
 		UpdatedAt: parseRDTime(resp.UpdatedAt),
 	}, nil
 }
 
 func (s *Service) CreateScheduledTask(ctx context.Context, params CreateScheduledTaskParams) (domain.Task, error) {
-	deal, err := s.findSingleDeal(ctx, params.DealName, params.AllowedOwnerID)
+	deal, err := s.resolveDealForAction(ctx, ResolveDealParams{
+		DealName:       params.DealName,
+		Company:        params.Company,
+		ProductName:    params.ProductName,
+		Stage:          params.Stage,
+		Pipeline:       params.Pipeline,
+		OwnerName:      params.OwnerName,
+		AllowedOwnerID: params.AllowedOwnerID,
+	})
 	if err != nil {
 		return domain.Task{}, err
 	}
@@ -580,6 +733,11 @@ func (s *Service) CreateScheduledTaskForDeal(ctx context.Context, deal domain.De
 		userIDs = []string{owner.ID}
 	} else if strings.TrimSpace(params.UserID) != "" {
 		userIDs = []string{strings.TrimSpace(params.UserID)}
+	}
+	if existing, ok, err := s.findExistingTask(ctx, deal.ID, params); err != nil {
+		return domain.Task{}, err
+	} else if ok {
+		return existing, nil
 	}
 	resp, err := s.client.CreateTask(ctx, rdClient.CreateTaskParams{
 		DealID:  deal.ID,
@@ -624,6 +782,46 @@ func (s *Service) findSingleDeal(ctx context.Context, name string, allowedOwnerI
 	}
 }
 
+func (s *Service) resolveDealForAction(ctx context.Context, params ResolveDealParams) (domain.Deal, error) {
+	if strings.TrimSpace(params.DealName) != "" {
+		return s.findSingleDeal(ctx, params.DealName, params.AllowedOwnerID)
+	}
+	if strings.TrimSpace(params.Company) == "" {
+		return domain.Deal{}, &MissingDealNameError{}
+	}
+	stageID := ""
+	if strings.TrimSpace(params.Stage) != "" {
+		var err error
+		stageID, err = s.findStageIDInPipeline(ctx, params.Stage, params.Pipeline)
+		if err != nil {
+			return domain.Deal{}, err
+		}
+	}
+	resp, err := s.client.GetDeals(ctx, rdClient.GetDealsParams{})
+	if err != nil {
+		return domain.Deal{}, err
+	}
+	deals := filterDealsByOwner(mapDeals(resp), params.AllowedOwnerID)
+	deals = filterDealsByCustomerName(deals, params.Company)
+	deals = filterDealsByProductName(deals, params.ProductName)
+	deals = filterDealsByStageID(deals, stageID)
+	if strings.TrimSpace(params.OwnerName) != "" {
+		deals = filterDealsByOwnerName(deals, params.OwnerName)
+	}
+	sortDealsByUpdatedDesc(deals)
+	switch len(deals) {
+	case 0:
+		return domain.Deal{}, &DealNotFoundError{Name: params.Company}
+	case 1:
+		return deals[0], nil
+	default:
+		if len(deals) > 5 {
+			deals = deals[:5]
+		}
+		return domain.Deal{}, &MultipleDealsError{Deals: deals}
+	}
+}
+
 func (s *Service) findStageID(ctx context.Context, stageName string) (string, error) {
 	stages, err := s.client.GetDealStages(ctx)
 	if err != nil {
@@ -661,24 +859,88 @@ func (s *Service) findStageID(ctx context.Context, stageName string) (string, er
 	return "", &StageNotFoundError{Available: available}
 }
 
+func (s *Service) findStageIDInPipeline(ctx context.Context, stageName, pipelineName string) (string, error) {
+	stages, err := s.client.GetDealStages(ctx)
+	if err != nil {
+		return "", fmt.Errorf("rdstation.findStageIDInPipeline: %w", err)
+	}
+
+	normalizedTarget := normalizeSearchText(stageName)
+	normalizedPipeline := normalizeSearchText(pipelineName)
+	available := make([]string, 0, len(stages))
+	exactMatches := make([]domain.Stage, 0)
+	partialMatches := make([]domain.Stage, 0)
+
+	for _, st := range stages {
+		available = append(available, st.Name)
+		stage := domain.Stage{ID: st.ID, Name: st.Name, PipelineID: st.DealPipelineID}
+		if normalizedPipeline != "" && normalizeSearchText(st.DealPipelineID) != normalizedPipeline {
+			continue
+		}
+
+		normalizedStage := normalizeSearchText(st.Name)
+		if normalizedStage == normalizedTarget {
+			exactMatches = append(exactMatches, stage)
+			continue
+		}
+		if strings.Contains(normalizedStage, normalizedTarget) || strings.Contains(normalizedTarget, normalizedStage) {
+			partialMatches = append(partialMatches, stage)
+		}
+	}
+
+	if len(exactMatches) == 1 {
+		return exactMatches[0].ID, nil
+	}
+	if len(exactMatches) > 1 {
+		return "", &AmbiguousStageError{Name: stageName, Stages: exactMatches}
+	}
+	if len(partialMatches) == 1 {
+		return partialMatches[0].ID, nil
+	}
+	if len(partialMatches) > 1 {
+		return "", &AmbiguousStageError{Name: stageName, Stages: partialMatches}
+	}
+	return "", &StageNotFoundError{Available: available}
+}
+
 func mapDeals(resp []rdClient.DealResponse) []domain.Deal {
 	deals := make([]domain.Deal, 0, len(resp))
 	for _, d := range resp {
-		contacts := make([]domain.Contact, 0, len(d.Contacts))
-		for _, c := range d.Contacts {
-			contacts = append(contacts, domain.Contact{ID: c.ID, Name: c.Name})
-		}
 		deals = append(deals, domain.Deal{
 			ID:        d.ID,
 			Name:      d.Name,
-			Stage:     domain.Stage{ID: d.DealStage.ID, Name: d.DealStage.Name},
+			Stage:     domain.Stage{ID: d.DealStage.ID, Name: d.DealStage.Name, PipelineID: d.DealStage.DealPipelineID},
 			Owner:     mapOwner(d),
-			Contacts:  contacts,
+			Contacts:  mapDealContacts(d.Contacts),
+			Products:  mapDealProducts(d.Products),
 			CreatedAt: parseRDTime(d.CreatedAt),
 			UpdatedAt: parseRDTime(d.UpdatedAt),
 		})
 	}
 	return deals
+}
+
+func mapDealContacts(resp []rdClient.DealContactResponse) []domain.Contact {
+	contacts := make([]domain.Contact, 0, len(resp))
+	for _, c := range resp {
+		contacts = append(contacts, domain.Contact{ID: c.ID, Name: c.Name})
+	}
+	return contacts
+}
+
+func mapDealProducts(resp []rdClient.DealProductResponse) []domain.DealProduct {
+	products := make([]domain.DealProduct, 0, len(resp))
+	for _, p := range resp {
+		products = append(products, domain.DealProduct{
+			ID:          p.ID,
+			Name:        p.Name,
+			Description: p.Description,
+			Amount:      p.Amount,
+			Price:       p.Price,
+			Total:       p.Total,
+		})
+	}
+	return products
 }
 
 func mapTask(resp rdClient.TaskResponse) domain.Task {
@@ -702,6 +964,34 @@ func mapTask(resp rdClient.TaskResponse) domain.Task {
 		DealName:         resp.Deal.Name,
 		ResponsibleNames: names,
 	}
+}
+
+func (s *Service) findExistingTask(ctx context.Context, dealID string, params CreateScheduledTaskParams) (domain.Task, bool, error) {
+	open := false
+	resp, err := s.client.GetTasks(ctx, rdClient.GetTasksParams{Done: &open, DealID: dealID, Limit: 200})
+	if err != nil {
+		return domain.Task{}, false, fmt.Errorf("rdstation.findExistingTask: %w", err)
+	}
+	targetSubject := normalizeSearchText(params.Subject)
+	targetType := strings.TrimSpace(params.Type)
+	if targetType == "" {
+		targetType = "task"
+	}
+	targetDate := strings.TrimSpace(params.Date)
+	targetHour := strings.TrimSpace(params.Hour)
+	for _, task := range resp {
+		if normalizeSearchText(task.Subject) != targetSubject {
+			continue
+		}
+		if strings.TrimSpace(task.Type) != targetType {
+			continue
+		}
+		if strings.TrimSpace(task.Date) != targetDate || strings.TrimSpace(task.Hour) != targetHour {
+			continue
+		}
+		return mapTask(task), true, nil
+	}
+	return domain.Task{}, false, nil
 }
 
 func mapOwner(d rdClient.DealResponse) domain.DealOwner {
@@ -742,6 +1032,81 @@ func filterDealsByOwnerName(deals []domain.Deal, ownerName string) []domain.Deal
 	return out
 }
 
+func filterDealsByCustomerName(deals []domain.Deal, customerName string) []domain.Deal {
+	customerName = normalizeSearchText(customerName)
+	if customerName == "" {
+		return deals
+	}
+	exact := make([]domain.Deal, 0)
+	for _, deal := range deals {
+		for _, contact := range deal.Contacts {
+			if normalizeSearchText(contact.Name) == customerName {
+				exact = append(exact, deal)
+				break
+			}
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+
+	partial := make([]domain.Deal, 0)
+	for _, deal := range deals {
+		for _, contact := range deal.Contacts {
+			name := normalizeSearchText(contact.Name)
+			if strings.Contains(name, customerName) || strings.Contains(customerName, name) {
+				partial = append(partial, deal)
+				break
+			}
+		}
+	}
+	return partial
+}
+
+func filterDealsByProductName(deals []domain.Deal, productName string) []domain.Deal {
+	productName = normalizeSearchText(productName)
+	if productName == "" {
+		return deals
+	}
+	exact := make([]domain.Deal, 0)
+	for _, deal := range deals {
+		for _, product := range deal.Products {
+			if normalizeSearchText(product.Name) == productName {
+				exact = append(exact, deal)
+				break
+			}
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	partial := make([]domain.Deal, 0)
+	for _, deal := range deals {
+		for _, product := range deal.Products {
+			name := normalizeSearchText(product.Name)
+			if strings.Contains(name, productName) || strings.Contains(productName, name) {
+				partial = append(partial, deal)
+				break
+			}
+		}
+	}
+	return partial
+}
+
+func filterDealsByStageID(deals []domain.Deal, stageID string) []domain.Deal {
+	stageID = strings.TrimSpace(stageID)
+	if stageID == "" {
+		return deals
+	}
+	out := make([]domain.Deal, 0, len(deals))
+	for _, deal := range deals {
+		if deal.Stage.ID == stageID {
+			out = append(out, deal)
+		}
+	}
+	return out
+}
+
 func filterDealsByUpdatedRange(deals []domain.Deal, updatedAfter, updatedBefore string) []domain.Deal {
 	after, hasAfter := parseDateOnly(updatedAfter)
 	before, hasBefore := parseDateOnly(updatedBefore)
@@ -764,6 +1129,23 @@ func filterDealsByUpdatedRange(deals []domain.Deal, updatedAfter, updatedBefore 
 		out = append(out, deal)
 	}
 	return out
+}
+
+func exactContactsByName(contacts []rdClient.ContactResponse, target string) []rdClient.ContactResponse {
+	normalizedTarget := normalizeSearchText(target)
+	if normalizedTarget == "" {
+		return contacts
+	}
+	exact := make([]rdClient.ContactResponse, 0)
+	for _, contact := range contacts {
+		if normalizeSearchText(contact.Name) == normalizedTarget {
+			exact = append(exact, contact)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return contacts
 }
 
 func sortDealsByUpdatedDesc(deals []domain.Deal) {
@@ -968,9 +1350,14 @@ func parseRDTime(s string) time.Time {
 // CreateDealActivityParams holds the parameters to create a deal annotation.
 type CreateDealActivityParams struct {
 	DealName       string
+	Company        string
+	ProductName    string
+	Stage          string
+	Pipeline       string
 	UserID         string
 	Text           string
 	AllowedOwnerID map[string]struct{}
+	IdempotencyKey string
 }
 
 // GetDealActivities returns the manual annotations of a deal identified by name.
@@ -980,6 +1367,14 @@ func (s *Service) GetDealActivities(ctx context.Context, dealName string, allowe
 		return nil, err
 	}
 
+	return s.GetDealActivitiesByID(ctx, deal.ID)
+}
+
+func (s *Service) GetDealActivitiesResolved(ctx context.Context, params ResolveDealParams) ([]domain.Activity, error) {
+	deal, err := s.resolveDealForAction(ctx, params)
+	if err != nil {
+		return nil, err
+	}
 	return s.GetDealActivitiesByID(ctx, deal.ID)
 }
 
@@ -997,15 +1392,41 @@ func (s *Service) GetDealActivitiesByID(ctx context.Context, dealID string) ([]d
 	return activities, nil
 }
 
+func (s *Service) findExistingActivity(ctx context.Context, dealID, text string) (domain.Activity, bool, error) {
+	activities, err := s.GetDealActivitiesByID(ctx, dealID)
+	if err != nil {
+		return domain.Activity{}, false, fmt.Errorf("rdstation.findExistingActivity: %w", err)
+	}
+	target := normalizeSearchText(text)
+	for _, activity := range activities {
+		if normalizeSearchText(activity.Text) == target {
+			return activity, true, nil
+		}
+	}
+	return domain.Activity{}, false, nil
+}
+
 // CreateDealActivity registers a manual annotation in a deal identified by name.
 func (s *Service) CreateDealActivity(ctx context.Context, params CreateDealActivityParams) (domain.Activity, error) {
 	if params.UserID == "" {
 		return domain.Activity{}, fmt.Errorf("seu perfil não possui RD Station ID configurado; contate o administrador")
 	}
 
-	deal, err := s.findSingleDeal(ctx, params.DealName, params.AllowedOwnerID)
+	deal, err := s.resolveDealForAction(ctx, ResolveDealParams{
+		DealName:       params.DealName,
+		Company:        params.Company,
+		ProductName:    params.ProductName,
+		Stage:          params.Stage,
+		AllowedOwnerID: params.AllowedOwnerID,
+	})
 	if err != nil {
 		return domain.Activity{}, err
+	}
+
+	if existing, ok, err := s.findExistingActivity(ctx, deal.ID, params.Text); err != nil {
+		return domain.Activity{}, err
+	} else if ok {
+		return existing, nil
 	}
 
 	resp, err := s.client.CreateActivity(ctx, deal.ID, params.UserID, params.Text)

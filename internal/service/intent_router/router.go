@@ -50,8 +50,15 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 		})
 
 	case domain.IntentGetDeals:
+		name := p["name"]
+		customerName := p["company"]
+		if customerName == "" && looksLikeCustomerDealQuery(intent.RawText) {
+			customerName = name
+			name = ""
+		}
 		return r.rdstation.GetDeals(ctx, rdSvc.GetDealsParams{
-			Name:           p["name"],
+			Name:           name,
+			CustomerName:   customerName,
 			Stage:          p["stage"],
 			Status:         p["status"],
 			OwnerName:      p["owner_name"],
@@ -64,6 +71,16 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 		return r.rdstation.GetDealForOwners(ctx, p["deal_name"], owners)
 
 	case domain.IntentGetDealSummary:
+		if strings.TrimSpace(p["deal_name"]) == "" && strings.TrimSpace(p["company"]) != "" {
+			return r.rdstation.GetDealSummaryResolved(ctx, rdSvc.ResolveDealParams{
+				Company:        p["company"],
+				ProductName:    p["product"],
+				Stage:          p["stage"],
+				Pipeline:       p["pipeline"],
+				OwnerName:      p["owner_name"],
+				AllowedOwnerID: owners,
+			})
+		}
 		return r.rdstation.GetDealSummaryForOwners(ctx, p["deal_name"], owners)
 
 	case domain.IntentGetDealContacts:
@@ -79,13 +96,21 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 
 	case domain.IntentCreateDeal:
 		return r.rdstation.CreateDeal(ctx, rdSvc.CreateDealParams{
-			Name:        p["name"],
-			ContactName: p["contact_name"],
-			Stage:       p["stage"],
-			OwnerName:   p["owner_name"],
-			ProductName: p["product"],
-			Notes:       p["notes"],
-			UserID:      actor.RDStationID,
+			Name:            p["name"],
+			Company:         p["company"],
+			ContactName:     p["contact_name"],
+			Pipeline:        p["pipeline"],
+			Stage:           p["stage"],
+			OwnerName:       p["owner_name"],
+			ProductName:     p["product"],
+			Notes:           p["notes"],
+			UserID:          actor.RDStationID,
+			FollowUpSubject: p["followup_subject"],
+			FollowUpType:    p["followup_type"],
+			FollowUpDate:    p["followup_date"],
+			FollowUpHour:    p["followup_hour"],
+			FollowUpNotes:   p["followup_notes"],
+			IdempotencyKey:  p["idempotency_key"],
 		})
 
 	case domain.IntentUpdateDeal:
@@ -116,19 +141,38 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 		return r.rdstation.AssociateContactToDeal(ctx, p["deal_name"], p["contact_name"])
 
 	case domain.IntentGetDealActivities:
+		if strings.TrimSpace(p["deal_name"]) == "" && strings.TrimSpace(p["company"]) != "" {
+			return r.rdstation.GetDealActivitiesResolved(ctx, rdSvc.ResolveDealParams{
+				Company:        p["company"],
+				ProductName:    p["product"],
+				Stage:          p["stage"],
+				Pipeline:       p["pipeline"],
+				OwnerName:      p["owner_name"],
+				AllowedOwnerID: owners,
+			})
+		}
 		return r.rdstation.GetDealActivities(ctx, p["deal_name"], owners)
 
 	case domain.IntentCreateDealActivity:
 		return r.rdstation.CreateDealActivity(ctx, rdSvc.CreateDealActivityParams{
 			DealName:       p["deal_name"],
+			Company:        p["company"],
+			ProductName:    p["product"],
+			Stage:          p["stage"],
+			Pipeline:       p["pipeline"],
 			UserID:         actor.RDStationID,
 			Text:           p["text"],
 			AllowedOwnerID: owners,
+			IdempotencyKey: p["idempotency_key"],
 		})
 
 	case domain.IntentCreateScheduledTask:
 		return r.rdstation.CreateScheduledTask(ctx, rdSvc.CreateScheduledTaskParams{
 			DealName:       p["deal_name"],
+			Company:        p["company"],
+			ProductName:    p["product"],
+			Pipeline:       p["pipeline"],
+			Stage:          p["stage"],
 			Subject:        p["subject"],
 			Type:           p["type"],
 			Date:           p["date"],
@@ -137,6 +181,7 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 			UserID:         actor.RDStationID,
 			OwnerName:      p["owner_name"],
 			AllowedOwnerID: owners,
+			IdempotencyKey: p["idempotency_key"],
 		})
 
 	case domain.IntentUnknown:
@@ -145,6 +190,11 @@ func (r *Router) RouteForActor(ctx context.Context, intent domain.Intent, actor 
 	default:
 		return nil, fmt.Errorf("unknown intent: %s", intent.Name)
 	}
+}
+
+func looksLikeCustomerDealQuery(raw string) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	return strings.Contains(raw, "empresa") || strings.Contains(raw, "cliente")
 }
 
 // ResolveDealSelection executes the original intent against a specific deal chosen by the user.
@@ -165,13 +215,14 @@ func (r *Router) ResolveDealSelection(ctx context.Context, intent domain.Intent,
 	case domain.IntentCreateScheduledTask:
 		p := intent.Parameters
 		return r.rdstation.CreateScheduledTaskForDeal(ctx, deal, rdSvc.CreateScheduledTaskParams{
-			Subject:   p["subject"],
-			Type:      p["type"],
-			Date:      p["date"],
-			Hour:      p["hour"],
-			Notes:     p["notes"],
-			UserID:    actor.RDStationID,
-			OwnerName: p["owner_name"],
+			Subject:        p["subject"],
+			Type:           p["type"],
+			Date:           p["date"],
+			Hour:           p["hour"],
+			Notes:          p["notes"],
+			UserID:         actor.RDStationID,
+			OwnerName:      p["owner_name"],
+			IdempotencyKey: p["idempotency_key"],
 		})
 
 	default:

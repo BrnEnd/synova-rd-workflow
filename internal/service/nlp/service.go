@@ -25,34 +25,39 @@ Sempre use a ferramenta "identify_intent" para retornar a intenção estruturada
 Intents disponíveis e seus parâmetros obrigatórios/opcionais:
 
 - get_contacts   → parâmetros opcionais: "name", "email", "phone"
-- get_deals      → parâmetros opcionais: "name", "stage", "status" (status: "open", "won" ou "lost"), "owner_name" (nome do responsável/dono/vendedor), "updated_after" (data mínima de atualização YYYY-MM-DD), "updated_before" (data máxima de atualização YYYY-MM-DD)
+- get_deals      → parâmetros opcionais: "name", "company" (empresa/cliente vinculado), "stage", "status" (status: "open", "won" ou "lost"), "owner_name" (nome do responsável/dono/vendedor), "updated_after" (data mínima de atualização YYYY-MM-DD), "updated_before" (data máxima de atualização YYYY-MM-DD)
 - get_deal       → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação específica mencionada pelo usuário)
-- get_deal_summary → parâmetro OBRIGATÓRIO: "deal_name" (resumo executivo/detalhado da negociação)
+- get_deal_summary → parâmetros: "deal_name" OU "company"; opcionalmente "product", "stage", "pipeline" para resolver ambiguidade
 - get_deal_contacts → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação)
 - create_contact → parâmetros: "name" (obrigatório), "email", "phone", "company" (opcionais)
-- create_deal    → parâmetros: "name" (nome da nova negociação), "company" (cliente/empresa), "product" (produto), "contact_name" (contato responsável no cliente), "stage" (etapa), "owner_name" (vendedor/responsável), "notes" (observações)
+- create_deal    → parâmetros: "name" (nome da nova negociação), "company" (cliente/empresa), "product" (produto), "pipeline" (funil), "contact_name" (contato responsável no cliente), "stage" (etapa), "owner_name" (vendedor/responsável), "notes" (observações), "followup_subject", "followup_date", "followup_hour", "followup_type", "followup_notes"
 - update_deal    → parâmetros: "deal_name" (OBRIGATÓRIO), "field" (ex: "name" ou "stage"), "value" (novo valor)
 - move_deal_stage → parâmetros: "deal_name" (OBRIGATÓRIO), "target_stage" (OBRIGATÓRIO — nome do estágio destino)
 - delete_deal    -> parametro OBRIGATORIO: "deal_name" (quando o usuario pedir para apagar/excluir/deletar uma negociacao)
 - update_contact → parâmetros: "contact_name" (OBRIGATÓRIO — nome do contato), "field" (OBRIGATÓRIO — ex: "email", "phone", "name"), "value" (OBRIGATÓRIO — novo valor)
 - associate_contact_to_deal → parâmetros: "deal_name" (OBRIGATÓRIO), "contact_name" (OBRIGATÓRIO)
 - get_deal_activities → parâmetro OBRIGATÓRIO: "deal_name" (nome da negociação cujas anotações serão consultadas)
-- create_deal_activity → parâmetros: "deal_name" (OBRIGATÓRIO — negociação onde registrar), "text" (OBRIGATÓRIO — conteúdo da anotação)
+- create_deal_activity → parâmetros: "deal_name" OU "company"; opcionalmente "product", "stage", "pipeline"; "text" (OBRIGATÓRIO — conteúdo da anotação)
 - unknown        → quando não for possível identificar a intenção
 
 - get_scheduled_tasks -> sem parametros; usado quando o usuario pedir tarefas agendadas, alertas agendados, pendencias agendadas ou o que esta pendente nos alertas
-- create_scheduled_task -> parametros: "deal_name" (negociacao), "subject" (assunto da tarefa), "date" (AAAA-MM-DD), "hour" (HH:MM), "type" (call, email, meeting, task, lunch, visit, whatsapp), "owner_name" (responsavel opcional), "notes" (observacoes opcionais)
+- create_scheduled_task -> parametros: "deal_name" (negociacao) OU "company" + "product" + "pipeline" + "stage"; "subject" (assunto da tarefa), "date" (AAAA-MM-DD), "hour" (HH:MM), "type" (call, email, meeting, task, lunch, visit, whatsapp), "owner_name" (responsavel opcional), "notes" (observacoes opcionais)
 
 REGRAS CRÍTICAS:
 - Para get_deal e get_deal_contacts: sempre use a chave "deal_name" com o nome da negociação
 - Para get_deal_summary: use quando o usuário pedir "mais detalhes", "mais informações", "resumo", "contexto" ou "situação atual" de uma negociação. Use "deal_name" com o nome da negociação; se o usuário disser "essa", "esse card", "dela" ou similar, infira pelo histórico.
 - Para get_deals: quando o usuário pedir negociações "do", "da", "responsável", "dono", "vendedor" ou "atribuídas a" uma pessoa, use "owner_name"; não use "name" para o nome da pessoa
+- Para get_deals: quando o usuário perguntar por negociação de uma empresa/cliente (ex: "empresa ABC", "cliente ABC"), use "company"; não use "name" para esse caso.
+- Para perguntas como "existe alguma negociação para a empresa X", use intent "get_deals" com "company": "X"; não use "get_deal".
 - Para get_deals: quando o usuário mencionar um intervalo de datas de atualização (ex: "atualizadas entre 13/06 e 23/06", "dos últimos 10 dias", "desde 01/06"), extraia as datas nos parâmetros "updated_after" e "updated_before" no formato YYYY-MM-DD. Use o ano corrente se o usuário não informar o ano. Se o usuário disser "últimos N dias", calcule updated_after como hoje menos N dias.
 - Para create_deal: "card" significa negociação. Se o usuário informar cliente/empresa e produto, preencha "company" e "product"; se não houver "name", monte "name" como "Cliente - Produto". Se informar vendedor/responsável, use "owner_name". Qualquer detalhe adicional que não caiba nos campos estruturados deve ir em "notes".
+- Para create_deal: se o usuário pedir tarefa de acompanhamento junto da negociação, preencha followup_subject, followup_date, followup_hour, followup_type e followup_notes quando disponíveis.
 - Para update_contact: "contact_name" é o nome do contato a editar; "field" é o campo (email/phone/name); "value" é o novo conteúdo
 - Para associate_contact_to_deal: "deal_name" é a negociação destino; "contact_name" é o contato a associar
 - Para get_deal_activities: sempre use "deal_name" com o nome da negociação cujas anotações serão listadas
 - Para create_deal_activity: extraia exatamente o que o usuário quer registrar como "text"; o responsável pela anotação é determinado automaticamente pelo sistema
+- Para create_deal_activity e get_deal_summary: se o usuário mencionar empresa/cliente em vez do nome exato da negociação, preencha "company".
+- Para datas relativas em tarefas: "agora" deve preencher date/hour com a data e hora atuais do contexto temporal; "hoje" só preenche date se não houver hora; "amanhã" soma um dia; "daqui a X minutos/horas" calcula a partir do contexto temporal.
 - Nunca deixe parâmetros obrigatórios vazios — se o usuário mencionou um nome, extraia-o
 - Use o histórico da conversa para inferir nomes de negociações ou contatos quando o usuário usar pronomes como "essa", "esse", "desse"
 - Responda apenas com a chamada de ferramenta — nunca com texto livre nesta etapa.`
@@ -64,6 +69,8 @@ Inclua:
 - histórico registrado do que já aconteceu
 - última interação/anotação relevante
 - situação atual com base na etapa e nos registros
+- decisões ou interesses manifestados pelo cliente, somente se estiverem registrados
+- pendências
 - tarefas ou follow-ups agendados no RD, quando existirem, sem interpretar o objetivo delas
 
 Regras:
@@ -73,7 +80,8 @@ Regras:
 - Use as tarefas abertas apenas para informar o que está agendado no RD, com assunto, data, horário e responsável disponíveis.
 - Se houver poucas anotações, não diga genericamente que "não há outros registros" quando já existir informação útil; apenas limite o resumo aos registros disponíveis.
 - Não invente fatos que não estejam nos dados.
-- Escreva em português brasileiro, em 2 a 4 parágrafos curtos.
+- Organize com os blocos: "Situação atual", "Histórico", "Decisões/interesses", "Pendências" e "Próxima ação".
+- Escreva em português brasileiro, de forma objetiva para WhatsApp.
 - Comece com "*Resumo da negociação:*".`
 
 const dealSummaryGuardrails = `Guard rails obrigatórios:
@@ -127,7 +135,11 @@ var intentTool = openaiClient.Tool{
 						},
 						"company": map[string]interface{}{
 							"type":        "string",
-							"description": "Empresa/cliente do contato (create_contact) ou cliente da nova negociação (create_deal)",
+							"description": "Empresa/cliente do contato, cliente da nova negociação ou cliente usado para buscar negociações vinculadas especificamente a essa empresa.",
+						},
+						"pipeline": map[string]interface{}{
+							"type":        "string",
+							"description": "Nome do funil informado pelo usuário para criação de negociação.",
 						},
 						"product": map[string]interface{}{
 							"type":        "string",
@@ -136,6 +148,27 @@ var intentTool = openaiClient.Tool{
 						"stage": map[string]interface{}{
 							"type":        "string",
 							"description": "Nome do estágio para filtrar ou atribuir em get_deals ou create_deal",
+						},
+						"followup_subject": map[string]interface{}{
+							"type":        "string",
+							"description": "Assunto da tarefa de acompanhamento solicitada junto da criação da negociação.",
+						},
+						"followup_date": map[string]interface{}{
+							"type":        "string",
+							"description": "Data da tarefa de acompanhamento no formato AAAA-MM-DD.",
+						},
+						"followup_hour": map[string]interface{}{
+							"type":        "string",
+							"description": "Horário da tarefa de acompanhamento no formato HH:MM.",
+						},
+						"followup_type": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"call", "email", "meeting", "task", "lunch", "visit", "whatsapp"},
+							"description": "Tipo da tarefa de acompanhamento.",
+						},
+						"followup_notes": map[string]interface{}{
+							"type":        "string",
+							"description": "Observações da tarefa de acompanhamento.",
 						},
 						"target_stage": map[string]interface{}{
 							"type":        "string",
@@ -327,6 +360,27 @@ func formatStableResponse(intent domain.IntentName, result interface{}) (string,
 			return "", false
 		}
 		return formatActivitiesList(activities), true
+	case domain.IntentCreateScheduledTask:
+		task, ok := result.(domain.Task)
+		if !ok {
+			return "", false
+		}
+		return formatCreatedTask(task), true
+	case domain.IntentCreateDealActivity:
+		activity, ok := result.(domain.Activity)
+		if !ok {
+			return "", false
+		}
+		return formatCreatedActivity(activity), true
+	case domain.IntentCreateDeal:
+		created, ok := result.(domain.DealCreationResult)
+		if !ok {
+			if deal, dealOK := result.(domain.Deal); dealOK {
+				return formatCreatedDeal(domain.DealCreationResult{Deal: deal}), true
+			}
+			return "", false
+		}
+		return formatCreatedDeal(created), true
 	default:
 		return "", false
 	}
@@ -347,6 +401,7 @@ func formatDealsList(deals []domain.Deal) string {
 			"Nome: "+valueOrFallback(deal.Name, "Sem nome"),
 			"Etapa: "+valueOrFallback(deal.Stage.Name, "Não informada"),
 			"Contato: "+valueOrFallback(firstDealContactName(deal), "Não informado"),
+			"Produto: "+valueOrFallback(firstDealProductName(deal), "Não informado"),
 			"Responsavel: "+valueOrFallback(deal.Owner.Name, "Não informado"),
 		)
 	}
@@ -370,6 +425,7 @@ func formatDealDetails(deal domain.Deal) string {
 		fmt.Sprintf("*%s*", valueOrFallback(deal.Name, "Negociação sem nome")),
 		"Etapa: " + valueOrFallback(deal.Stage.Name, "Não informada"),
 		"Responsável: " + valueOrFallback(deal.Owner.Name, "Não informado"),
+		"Produto: " + valueOrFallback(firstDealProductName(deal), "Não informado"),
 	}
 	if len(deal.Contacts) == 0 {
 		lines = append(lines, "Contatos vinculados: nenhum contato informado.")
@@ -380,6 +436,15 @@ func formatDealDetails(deal domain.Deal) string {
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, valueOrFallback(contact.Name, "Contato sem nome")))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func firstDealProductName(deal domain.Deal) string {
+	for _, product := range deal.Products {
+		if strings.TrimSpace(product.Name) != "" {
+			return product.Name
+		}
+	}
+	return ""
 }
 
 func formatContactsList(contacts []domain.Contact) string {
@@ -409,6 +474,67 @@ func formatActivitiesList(activities []domain.Activity) string {
 		)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func formatCreatedTask(task domain.Task) string {
+	lines := []string{"Tarefa criada com sucesso."}
+	if task.Subject != "" {
+		lines = append(lines, "Assunto: "+task.Subject)
+	}
+	if task.DealName != "" {
+		lines = append(lines, "Negociação: "+task.DealName)
+	}
+	if task.Date != "" {
+		lines = append(lines, "Data: "+formatTaskDateTime(task.Date, task.Hour))
+	}
+	if len(task.ResponsibleNames) > 0 {
+		lines = append(lines, "Responsável: "+strings.Join(task.ResponsibleNames, ", "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatCreatedActivity(activity domain.Activity) string {
+	lines := []string{"Anotação salva com sucesso."}
+	if activity.Date != "" {
+		lines = append(lines, "Data: "+formatDisplayDate(activity.Date))
+	}
+	if activity.Text != "" {
+		lines = append(lines, "Texto: "+activity.Text)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatCreatedDeal(result domain.DealCreationResult) string {
+	prefix := "Negociação criada com sucesso."
+	if result.Idempotent {
+		prefix = "Essa negociação já existia; reutilizei o registro existente."
+	}
+	lines := []string{prefix, "Nome: " + valueOrFallback(result.Deal.Name, "Sem nome")}
+	if result.Deal.Stage.Name != "" {
+		lines = append(lines, "Etapa: "+result.Deal.Stage.Name)
+	}
+	if result.Deal.Owner.Name != "" {
+		lines = append(lines, "Responsável: "+result.Deal.Owner.Name)
+	}
+	if firstDealProductName(result.Deal) != "" {
+		lines = append(lines, "Produto: "+firstDealProductName(result.Deal))
+	}
+	if result.Task.ID != "" {
+		lines = append(lines, "", "Tarefa vinculada criada:", "Assunto: "+result.Task.Subject, "Data: "+formatTaskDateTime(result.Task.Date, result.Task.Hour))
+	}
+	if result.TaskError != "" {
+		lines = append(lines, "", "A negociação foi criada, mas não consegui agendar a tarefa vinculada.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatTaskDateTime(date, hour string) string {
+	dateText := formatDisplayDate(date)
+	hour = strings.TrimSpace(hour)
+	if hour == "" {
+		return dateText
+	}
+	return dateText + " às " + hour
 }
 
 func valueOrFallback(value, fallback string) string {
@@ -511,5 +637,5 @@ func currentDateContext() string {
 	if err != nil {
 		loc = time.FixedZone("America/Sao_Paulo", -3*60*60)
 	}
-	return "Contexto temporal: hoje é " + time.Now().In(loc).Format("2006-01-02") + " no fuso America/Sao_Paulo."
+	return "Contexto temporal: agora é " + time.Now().In(loc).Format("2006-01-02 15:04") + " no fuso America/Sao_Paulo."
 }

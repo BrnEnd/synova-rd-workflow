@@ -143,14 +143,14 @@ func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.Dynam
 		logger.Error("failed to initialize admin auth", "error", err)
 		os.Exit(1)
 	}
-	adminResources := adminSvc.NewResourceService(adminData, evolution, rd)
+	adminResources := adminSvc.NewResourceService(adminData, evolution, whatsApp, rd)
 	if err := adminResources.SeedAllowlist(context.Background(), cfg.EvolutionAllowedNumbers); err != nil {
 		logger.Warn("failed to seed admin allowlist from env", "error", err)
 	}
 	handler.SetAllowChecker(adminResources)
 	evolutionHandler.SetAllowChecker(adminResources)
 	admin := adminHandler.New(adminAuth, adminResources, rd, cfg.AdminCookieSecure)
-	scheduler := adminSvc.NewScheduler(adminData, rd, evolution, cfg.AlertCheckInterval, logger)
+	scheduler := adminSvc.NewScheduler(adminData, rd, evolution, whatsApp, cfg.AlertCheckInterval, logger)
 	go scheduler.Start(schedulerCtx)
 
 	r := gin.New()

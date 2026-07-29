@@ -11,6 +11,7 @@ import (
 	"synova-rd-workflow/config"
 	evoClient "synova-rd-workflow/internal/client/evolution"
 	rdClient "synova-rd-workflow/internal/client/rdstation"
+	waClient "synova-rd-workflow/internal/client/whatsapp"
 	adminSvc "synova-rd-workflow/internal/service/admin"
 	adminStore "synova-rd-workflow/internal/store/admin"
 )
@@ -31,8 +32,9 @@ func main() {
 		log.Fatal(err)
 	}
 	evolution := evoClient.NewWithSendDelay(cfg.EvolutionBaseURL, cfg.EvolutionAPIKey, cfg.EvolutionInstance, cfg.EvolutionSendDelay)
+	whatsApp := waClient.New(cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID)
 	rd := rdClient.New(cfg.RDStationToken)
-	resources := adminSvc.NewResourceService(store, evolution, rd)
+	resources := adminSvc.NewResourceService(store, evolution, whatsApp, rd)
 	result, err := resources.RunAlertNow(ctx, os.Args[1])
 	if err != nil {
 		log.Fatal(err)

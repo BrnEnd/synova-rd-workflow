@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -289,6 +290,13 @@ func (h *Handler) processTextMessage(c *gin.Context, inbound inboundTextMessage)
 		intent.Name = domain.IntentDeleteDeal
 		intent.RawText = msg
 	}
+	h.logger.InfoContext(ctx, "crm intent parsed",
+		"session_id", session.ID,
+		"intent", string(intent.Name),
+		"fields", safeIntentFieldNames(intent.Parameters),
+		"reference_time", nowInSaoPaulo().Format(time.RFC3339),
+		"timezone", "America/Sao_Paulo",
+	)
 
 	if intent.Name == domain.IntentCreateDeal {
 		reply := h.startCreateDealFlow(session.ID, intent)
@@ -390,6 +398,9 @@ func (h *Handler) buildReply(ctx context.Context, sessionID string, intent domai
 
 	if deal, ok := result.(domain.Deal); ok {
 		h.setActiveDeal(sessionID, deal)
+	}
+	if created, ok := result.(domain.DealCreationResult); ok {
+		h.setActiveDeal(sessionID, created.Deal)
 	}
 
 	if deals, ok := result.([]domain.Deal); ok {
@@ -504,8 +515,26 @@ func (h *Handler) handlePendingCreate(ctx context.Context, sessionID, msg string
 		draft.Intent.Parameters["name"] = strings.TrimSpace(msg)
 	case "contact_name":
 		draft.Intent.Parameters["contact_name"] = strings.TrimSpace(msg)
+	case "pipeline":
+		draft.Intent.Parameters["pipeline"] = strings.TrimSpace(msg)
 	case "stage":
 		draft.Intent.Parameters["stage"] = strings.TrimSpace(msg)
+	case "owner_name":
+		draft.Intent.Parameters["owner_name"] = strings.TrimSpace(msg)
+	case "followup_choice":
+		if isAffirmative(msg) {
+			draft.Intent.Parameters["followup_answer"] = "yes"
+		} else if isNegative(msg) {
+			draft.Intent.Parameters["followup_answer"] = "no"
+		} else {
+			return "Deseja agendar uma tarefa de acompanhamento para essa negociacao? Responda *sim* ou *nao*.", true, nil
+		}
+	case "followup_subject":
+		draft.Intent.Parameters["followup_subject"] = strings.TrimSpace(msg)
+	case "followup_date":
+		draft.Intent.Parameters["followup_date"] = normalizeTaskDate(msg)
+	case "followup_hour":
+		draft.Intent.Parameters["followup_hour"] = normalizeTaskHour(msg)
 	case "confirm":
 		if isAffirmative(msg) {
 			result, err := h.router.RouteForActor(ctx, draft.Intent, actor)
@@ -535,6 +564,9 @@ func (h *Handler) handlePendingCreate(ctx context.Context, sessionID, msg string
 				return h.handleRouteError(err, sessionID, draft.Intent), true, nil
 			}
 			h.clearPendingCreate(sessionID)
+			if created, ok := result.(domain.DealCreationResult); ok {
+				h.setActiveDeal(sessionID, created.Deal)
+			}
 			formatted, err := h.nlpSvc.FormatResponse(ctx, draft.Intent, result)
 			if err != nil {
 				h.logger.WarnContext(ctx, "nlp format create response failed", "session_id", sessionID, "error", err)
@@ -549,6 +581,7 @@ func (h *Handler) handlePendingCreate(ctx context.Context, sessionID, msg string
 		return "Para criar, responda *sim*. Para cancelar, responda *nao*.", true, nil
 	}
 
+	prepareCreateDealDraft(&draft)
 	h.setPendingCreate(sessionID, draft)
 	return h.nextCreateDealQuestion(sessionID, draft), true, nil
 }
@@ -567,9 +600,27 @@ func (h *Handler) nextCreateDealQuestion(sessionID string, draft pendingCreateDe
 	case "contact_name":
 		h.setPendingCreate(sessionID, draft)
 		return "Quem e o contato responsavel no cliente?"
+	case "pipeline":
+		h.setPendingCreate(sessionID, draft)
+		return "Em qual funil a negociacao deve ser criada?"
 	case "stage":
 		h.setPendingCreate(sessionID, draft)
 		return "Em qual etapa do funil devo criar essa negociacao?"
+	case "owner_name":
+		h.setPendingCreate(sessionID, draft)
+		return "Qual sera o vendedor ou responsavel?"
+	case "followup_choice":
+		h.setPendingCreate(sessionID, draft)
+		return "Deseja agendar alguma tarefa de acompanhamento para essa negociacao?"
+	case "followup_subject":
+		h.setPendingCreate(sessionID, draft)
+		return "Qual tarefa de acompanhamento devo agendar?"
+	case "followup_date":
+		h.setPendingCreate(sessionID, draft)
+		return "Para qual data devo agendar essa tarefa?"
+	case "followup_hour":
+		h.setPendingCreate(sessionID, draft)
+		return "Qual horario da tarefa de acompanhamento?"
 	default:
 		h.setPendingCreate(sessionID, draft)
 		return createDealConfirmation(draft)
@@ -607,6 +658,7 @@ func (h *Handler) startScheduledTaskFlow(ctx context.Context, sessionID string, 
 		draft.Intent.Parameters[key] = strings.TrimSpace(value)
 	}
 	clearUnmentionedScheduledTaskDefaults(&draft)
+	applyScheduledTaskCorrections(&draft, intent.RawText)
 	prepareScheduledTaskDraft(&draft)
 	h.setPendingScheduledTask(sessionID, draft)
 	return h.nextScheduledTaskQuestion(ctx, sessionID, draft, actor)
@@ -625,6 +677,16 @@ func (h *Handler) handlePendingScheduledTask(ctx context.Context, sessionID, msg
 	switch draft.nextField() {
 	case "deal_name":
 		draft.Intent.Parameters["deal_name"] = strings.TrimSpace(msg)
+	case "company":
+		draft.Intent.Parameters["company"] = strings.TrimSpace(msg)
+	case "product":
+		draft.Intent.Parameters["product"] = strings.TrimSpace(msg)
+	case "pipeline":
+		draft.Intent.Parameters["pipeline"] = strings.TrimSpace(msg)
+	case "stage":
+		draft.Intent.Parameters["stage"] = strings.TrimSpace(msg)
+	case "owner_name":
+		draft.Intent.Parameters["owner_name"] = strings.TrimSpace(msg)
 	case "subject":
 		draft.Intent.Parameters["subject"] = strings.TrimSpace(msg)
 	case "date":
@@ -663,7 +725,22 @@ func (h *Handler) nextScheduledTaskQuestion(ctx context.Context, sessionID strin
 	switch draft.nextField() {
 	case "deal_name":
 		h.setPendingScheduledTask(sessionID, draft)
-		return "Em qual negociacao devo criar essa tarefa?"
+		return "Em qual negociacao devo criar essa tarefa? Se preferir, informe o cliente."
+	case "company":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Para qual cliente?"
+	case "product":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Para qual produto?"
+	case "pipeline":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Em qual funil?"
+	case "stage":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Em qual etapa do funil?"
+	case "owner_name":
+		h.setPendingScheduledTask(sessionID, draft)
+		return "Para qual vendedor ou responsavel?"
 	case "subject":
 		h.setPendingScheduledTask(sessionID, draft)
 		return "Qual e o assunto da tarefa?"
@@ -813,7 +890,7 @@ func (h *Handler) handleRouteError(err error, sessionID string, intent domain.In
 		h.rememberDealSelection(sessionID, intent, multiErr.Deals)
 		names := make([]string, 0, len(multiErr.Deals))
 		for i, d := range multiErr.Deals {
-			names = append(names, fmt.Sprintf("%d. %s", i+1, d.Name))
+			names = append(names, fmt.Sprintf("%d. %s", i+1, describeDealOption(d)))
 		}
 		return fmt.Sprintf("Encontrei mais de uma negociacao com esse nome. Qual delas voce quer?\n%s",
 			strings.Join(names, "\n"))
@@ -823,6 +900,19 @@ func (h *Handler) handleRouteError(err error, sessionID string, intent domain.In
 	if errors.As(err, &stageErr) {
 		return fmt.Sprintf("Nao encontrei o estagio informado. Os estagios disponiveis sao: %s",
 			strings.Join(stageErr.Available, ", "))
+	}
+
+	var ambiguousStage *rdSvc.AmbiguousStageError
+	if errors.As(err, &ambiguousStage) {
+		options := make([]string, 0, len(ambiguousStage.Stages))
+		for _, stage := range ambiguousStage.Stages {
+			label := stage.Name
+			if stage.PipelineID != "" {
+				label = fmt.Sprintf("%s (funil ID: %s)", stage.Name, stage.PipelineID)
+			}
+			options = append(options, label)
+		}
+		return fmt.Sprintf("Encontrei essa etapa em mais de um funil. Informe qual funil devo usar:\n%s", numberedOptions(options))
 	}
 
 	var notFoundErr *rdSvc.DealNotFoundError
@@ -892,6 +982,46 @@ func numberedOptions(options []string) string {
 	return strings.Join(lines, "\n")
 }
 
+func describeDealOption(deal domain.Deal) string {
+	parts := []string{valueOrDefault(deal.Name, "Negociacao sem nome")}
+	if product := firstDealProductName(deal); product != "" {
+		parts = append(parts, "produto "+product)
+	}
+	if deal.Stage.Name != "" {
+		parts = append(parts, "etapa "+deal.Stage.Name)
+	}
+	if contact := firstDealContactName(deal); contact != "" {
+		parts = append(parts, "cliente "+contact)
+	}
+	return strings.Join(parts, " - ")
+}
+
+func firstDealProductName(deal domain.Deal) string {
+	for _, product := range deal.Products {
+		if strings.TrimSpace(product.Name) != "" {
+			return product.Name
+		}
+	}
+	return ""
+}
+
+func firstDealContactName(deal domain.Deal) string {
+	for _, contact := range deal.Contacts {
+		if strings.TrimSpace(contact.Name) != "" {
+			return contact.Name
+		}
+	}
+	return ""
+}
+
+func valueOrDefault(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func chooseStageSuggestion(msg string, stages []string) (string, bool) {
 	if index, ok := parseSelection(msg); ok && index >= 0 && index < len(stages) {
 		return stages[index], true
@@ -937,6 +1067,19 @@ func prepareCreateDealDraft(draft *pendingCreateDeal) {
 	if company != "" && product != "" && (name == "" || isGenericDealName(name)) {
 		p["name"] = company + " - " + product
 	}
+	if p["followup_type"] == "" {
+		p["followup_type"] = "task"
+	}
+	if p["followup_date"] != "" {
+		p["followup_date"] = normalizeTaskDate(p["followup_date"])
+	}
+	if p["followup_hour"] != "" {
+		p["followup_hour"] = normalizeTaskHour(p["followup_hour"])
+	}
+	if when, ok := parseRelativeScheduledTaskTime(draft.Intent.RawText); ok && p["followup_subject"] != "" {
+		p["followup_date"] = when.Format("2006-01-02")
+		p["followup_hour"] = when.Format("15:04")
+	}
 }
 
 func isGenericDealName(name string) bool {
@@ -965,9 +1108,18 @@ func createDealConfirmation(draft pendingCreateDeal) string {
 	if p["owner_name"] != "" {
 		lines = append(lines, fmt.Sprintf("*Vendedor:* %s", p["owner_name"]))
 	}
+	if p["pipeline"] != "" {
+		lines = append(lines, fmt.Sprintf("*Funil:* %s", p["pipeline"]))
+	}
 	lines = append(lines, fmt.Sprintf("*Etapa:* %s", p["stage"]))
 	if p["notes"] != "" {
 		lines = append(lines, fmt.Sprintf("*Observacoes:* %s", p["notes"]))
+	}
+	if p["followup_answer"] == "yes" || p["followup_subject"] != "" {
+		lines = append(lines, "", "*Tarefa de acompanhamento:*")
+		lines = append(lines, fmt.Sprintf("*Tarefa:* %s", p["followup_subject"]))
+		lines = append(lines, fmt.Sprintf("*Data:* %s", p["followup_date"]))
+		lines = append(lines, fmt.Sprintf("*Horario:* %s", p["followup_hour"]))
 	}
 	lines = append(lines, "", "Posso criar agora? Responda *sim* para confirmar ou *nao* para cancelar.")
 	return strings.Join(lines, "\n")
@@ -1015,14 +1167,14 @@ func scheduledTaskSubjectMentioned(raw, subject string) bool {
 }
 
 func scheduledTaskDateMentioned(raw, date string) bool {
-	if strings.Contains(raw, " hoje ") || strings.Contains(raw, " amanha ") || strings.Contains(raw, " amanhã ") || strings.Contains(raw, " agora ") {
+	if strings.Contains(raw, " hoje ") || strings.Contains(raw, " amanha ") || strings.Contains(raw, " amanhã ") || strings.Contains(raw, " agora ") || strings.Contains(raw, " daqui ") {
 		return true
 	}
 	return strings.Contains(raw, normalizeIntentText(date)) || regexp.MustCompile(`\b\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?\b`).FindString(raw) != ""
 }
 
 func scheduledTaskHourMentioned(raw, hour string) bool {
-	if strings.Contains(raw, " agora ") || strings.Contains(raw, " horario ") || strings.Contains(raw, " horário ") || strings.Contains(raw, " hora ") {
+	if strings.Contains(raw, " agora ") || strings.Contains(raw, " daqui ") || strings.Contains(raw, " horario ") || strings.Contains(raw, " horário ") || strings.Contains(raw, " hora ") {
 		return true
 	}
 	normalizedHour := strings.TrimSuffix(strings.ReplaceAll(strings.ToLower(strings.TrimSpace(hour)), "h", ":"), ":")
@@ -1045,6 +1197,10 @@ func applyScheduledTaskCorrections(draft *pendingScheduledTask, msg string) bool
 		now := nowInSaoPaulo()
 		p["date"] = now.Format("2006-01-02")
 		p["hour"] = now.Format("15:04")
+		changed = true
+	} else if when, ok := parseRelativeScheduledTaskTime(raw); ok {
+		p["date"] = when.Format("2006-01-02")
+		p["hour"] = when.Format("15:04")
 		changed = true
 	} else {
 		if date := extractScheduledTaskDate(raw); date != "" {
@@ -1076,6 +1232,9 @@ func extractScheduledTaskDate(value string) string {
 		if strings.Contains(normalized, " "+token+" ") {
 			return token
 		}
+	}
+	if strings.Contains(normalized, " agora ") {
+		return "agora"
 	}
 	return regexp.MustCompile(`\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b`).FindString(value)
 }
@@ -1111,11 +1270,25 @@ func scheduledTaskConfirmation(draft pendingScheduledTask) string {
 		"Vou criar esta tarefa no RD:",
 		"",
 		fmt.Sprintf("*Negociacao:* %s", p["deal_name"]),
+	}
+	if p["company"] != "" {
+		lines = append(lines, fmt.Sprintf("*Cliente:* %s", p["company"]))
+	}
+	if p["product"] != "" {
+		lines = append(lines, fmt.Sprintf("*Produto:* %s", p["product"]))
+	}
+	if p["pipeline"] != "" {
+		lines = append(lines, fmt.Sprintf("*Funil:* %s", p["pipeline"]))
+	}
+	if p["stage"] != "" {
+		lines = append(lines, fmt.Sprintf("*Etapa:* %s", p["stage"]))
+	}
+	lines = append(lines,
 		fmt.Sprintf("*Assunto:* %s", p["subject"]),
 		fmt.Sprintf("*Data:* %s", p["date"]),
 		fmt.Sprintf("*Horario:* %s", p["hour"]),
 		fmt.Sprintf("*Tipo:* %s", p["type"]),
-	}
+	)
 	if p["owner_name"] != "" {
 		lines = append(lines, fmt.Sprintf("*Responsavel:* %s", p["owner_name"]))
 	}
@@ -1175,6 +1348,8 @@ func normalizeTaskDate(value string) string {
 	normalized := strings.TrimSpace(normalizeIntentText(value))
 	now := nowInSaoPaulo()
 	switch normalized {
+	case "agora":
+		return now.Format("2006-01-02")
 	case "hoje":
 		return now.Format("2006-01-02")
 	case "amanha", "amanhã":
@@ -1203,6 +1378,37 @@ func normalizeTaskHour(value string) string {
 	return value
 }
 
+func parseRelativeScheduledTaskTime(value string) (time.Time, bool) {
+	normalized := normalizeIntentText(value)
+	matches := regexp.MustCompile(`\bdaqui\s+a?\s*([0-9]+|uma|um|duas|dois|tres|três)\s+(minuto|minutos|hora|horas)\b`).FindStringSubmatch(normalized)
+	if len(matches) != 3 {
+		return time.Time{}, false
+	}
+	amount, ok := parsePortugueseSmallNumber(matches[1])
+	if !ok || amount <= 0 {
+		return time.Time{}, false
+	}
+	now := nowInSaoPaulo()
+	if strings.HasPrefix(matches[2], "minuto") {
+		return now.Add(time.Duration(amount) * time.Minute), true
+	}
+	return now.Add(time.Duration(amount) * time.Hour), true
+}
+
+func parsePortugueseSmallNumber(value string) (int, bool) {
+	switch strings.TrimSpace(value) {
+	case "uma", "um":
+		return 1, true
+	case "duas", "dois":
+		return 2, true
+	case "tres", "três":
+		return 3, true
+	default:
+		n, err := strconv.Atoi(value)
+		return n, err == nil
+	}
+}
+
 func nowInSaoPaulo() time.Time {
 	return time.Now().In(saoPauloLocation())
 }
@@ -1227,6 +1433,17 @@ func normalizeIntentText(value string) string {
 		";", " ",
 	).Replace(value)
 	return " " + strings.Join(strings.Fields(value), " ") + " "
+}
+
+func safeIntentFieldNames(params map[string]string) []string {
+	fields := make([]string, 0, len(params))
+	for key, value := range params {
+		if strings.TrimSpace(value) != "" {
+			fields = append(fields, key)
+		}
+	}
+	sort.Strings(fields)
+	return fields
 }
 
 func parseSelection(msg string) (int, bool) {
@@ -1262,8 +1479,28 @@ func (p pendingCreateDeal) nextField() string {
 	if strings.TrimSpace(p.Intent.Parameters["contact_name"]) == "" {
 		return "contact_name"
 	}
+	if strings.TrimSpace(p.Intent.Parameters["pipeline"]) == "" {
+		return "pipeline"
+	}
 	if strings.TrimSpace(p.Intent.Parameters["stage"]) == "" {
 		return "stage"
+	}
+	if strings.TrimSpace(p.Intent.Parameters["owner_name"]) == "" {
+		return "owner_name"
+	}
+	if strings.TrimSpace(p.Intent.Parameters["followup_answer"]) == "" && strings.TrimSpace(p.Intent.Parameters["followup_subject"]) == "" {
+		return "followup_choice"
+	}
+	if strings.TrimSpace(p.Intent.Parameters["followup_answer"]) == "yes" || strings.TrimSpace(p.Intent.Parameters["followup_subject"]) != "" {
+		if strings.TrimSpace(p.Intent.Parameters["followup_subject"]) == "" {
+			return "followup_subject"
+		}
+		if strings.TrimSpace(p.Intent.Parameters["followup_date"]) == "" {
+			return "followup_date"
+		}
+		if strings.TrimSpace(p.Intent.Parameters["followup_hour"]) == "" {
+			return "followup_hour"
+		}
 	}
 	return "confirm"
 }
@@ -1274,7 +1511,21 @@ type pendingScheduledTask struct {
 
 func (p pendingScheduledTask) nextField() string {
 	if strings.TrimSpace(p.Intent.Parameters["deal_name"]) == "" {
-		return "deal_name"
+		if strings.TrimSpace(p.Intent.Parameters["company"]) == "" {
+			return "company"
+		}
+		if strings.TrimSpace(p.Intent.Parameters["product"]) == "" {
+			return "product"
+		}
+		if strings.TrimSpace(p.Intent.Parameters["pipeline"]) == "" {
+			return "pipeline"
+		}
+		if strings.TrimSpace(p.Intent.Parameters["stage"]) == "" {
+			return "stage"
+		}
+		if strings.TrimSpace(p.Intent.Parameters["owner_name"]) == "" {
+			return "owner_name"
+		}
 	}
 	if strings.TrimSpace(p.Intent.Parameters["subject"]) == "" {
 		return "subject"

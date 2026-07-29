@@ -45,6 +45,30 @@ func TestSanitizeTaskText_RemovesLocalPaths(t *testing.T) {
 	}
 }
 
+func TestParseRelativeScheduledTaskTime_AddsTwoHoursInSaoPaulo(t *testing.T) {
+	before := nowInSaoPaulo()
+	got, ok := parseRelativeScheduledTaskTime("Crie uma tarefa daqui a duas horas")
+	after := nowInSaoPaulo()
+	if !ok {
+		t.Fatal("expected relative time to be parsed")
+	}
+	min := before.Add(2 * time.Hour)
+	max := after.Add(2 * time.Hour)
+	if got.Before(min) || got.After(max) {
+		t.Fatalf("expected time around two hours from now, got %s, range %s - %s", got, min, max)
+	}
+	if got.Location().String() != saoPauloLocation().String() {
+		t.Fatalf("expected Sao Paulo location, got %s", got.Location())
+	}
+}
+
+func TestNormalizeTaskDateAgoraUsesTodayInSaoPaulo(t *testing.T) {
+	want := nowInSaoPaulo().Format("2006-01-02")
+	if got := normalizeTaskDate("agora"); got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+}
+
 func TestFormatScheduledTasks_RecalculatesStatusSanitizesAndLimits(t *testing.T) {
 	now := time.Date(2026, 6, 11, 10, 0, 0, 0, saoPauloLocation())
 	summary := adminSvc.ScheduledTaskSummary{

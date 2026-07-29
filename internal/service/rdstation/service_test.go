@@ -3,6 +3,7 @@ package rdstation_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -249,6 +250,256 @@ func TestGetDeals_WithoutUpdatedRangeKeepsExistingBehavior(t *testing.T) {
 	}
 }
 
+func TestGetDeals_FiltersByExactCustomerName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deals" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("name"); got != "" {
+			t.Fatalf("expected no deal name query when filtering by customer, got %q", got)
+		}
+		resp := rdClient.DealsListResponse{
+			Deals: []rdClient.DealResponse{
+				{ID: "right", Name: "Empresa ABC - Credito", Contacts: []rdClient.DealContactResponse{{ID: "c1", Name: "Empresa ABC"}}},
+				{ID: "wrong", Name: "Empresa ABCD - Seguro", Contacts: []rdClient.DealContactResponse{{ID: "c2", Name: "Empresa ABCD"}}},
+			},
+			Total: 2,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	client := rdClient.NewWithBaseURL("key", srv.URL)
+	svc := rdSvc.New(client)
+
+	deals, err := svc.GetDeals(context.Background(), rdSvc.GetDealsParams{CustomerName: "Empresa ABC"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deals) != 1 || deals[0].ID != "right" {
+		t.Fatalf("expected only exact customer deal, got %#v", deals)
+	}
+}
+
+func TestCreateDeal_AmbiguousStageAcrossPipelinesReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/deals":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rdClient.DealsListResponse{Deals: nil, Total: 0})
+		case "/deal_stages":
+			resp := rdClient.DealStageListResponse{
+				DealStages: []struct {
+					ID             string `json:"_id"`
+					Name           string `json:"name"`
+					DealPipelineID string `json:"deal_pipeline_id"`
+				}{
+					{ID: "s1", Name: "Apresentacao", DealPipelineID: "pipeline-a"},
+					{ID: "s2", Name: "Apresentacao", DealPipelineID: "pipeline-b"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := rdClient.NewWithBaseURL("key", srv.URL)
+	svc := rdSvc.New(client)
+
+	_, err := svc.CreateDeal(context.Background(), rdSvc.CreateDealParams{Name: "ABC - Credito", Stage: "Apresentacao"})
+	if err == nil {
+		t.Fatal("expected ambiguous stage error")
+	}
+	var ambiguous *rdSvc.AmbiguousStageError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("expected AmbiguousStageError, got %T: %v", err, err)
+	}
+	if len(ambiguous.Stages) != 2 {
+		t.Fatalf("expected two ambiguous stages, got %#v", ambiguous.Stages)
+	}
+}
+
+func TestCreateDeal_StageWithPipelineUsesMatchingStage(t *testing.T) {
+	var createdStageID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/deal_stages":
+			resp := rdClient.DealStageListResponse{
+				DealStages: []struct {
+					ID             string `json:"_id"`
+					Name           string `json:"name"`
+					DealPipelineID string `json:"deal_pipeline_id"`
+				}{
+					{ID: "s1", Name: "Apresentacao", DealPipelineID: "pipeline-a"},
+					{ID: "s2", Name: "Apresentacao", DealPipelineID: "pipeline-b"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/deals":
+			var payload struct {
+				Deal struct {
+					DealStageID string `json:"deal_stage_id"`
+				} `json:"deal"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			createdStageID = payload.Deal.DealStageID
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rdClient.DealResponse{
+				ID:        "d1",
+				Name:      "ABC - Credito",
+				DealStage: rdClient.DealStageResponse{ID: createdStageID, Name: "Apresentacao", DealPipelineID: "pipeline-b"},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := rdClient.NewWithBaseURL("key", srv.URL)
+	svc := rdSvc.New(client)
+
+	result, err := svc.CreateDeal(context.Background(), rdSvc.CreateDealParams{Name: "ABC - Credito", Stage: "Apresentacao", Pipeline: "pipeline-b"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if createdStageID != "s2" || result.Deal.Stage.PipelineID != "pipeline-b" {
+		t.Fatalf("expected pipeline-b stage s2, got stage id %q deal %#v", createdStageID, result.Deal)
+	}
+}
+
+func TestCreateDeal_CreatesFollowUpTaskAfterDeal(t *testing.T) {
+	createdDeal := false
+	createdTask := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/deals":
+			if r.Method == http.MethodGet {
+				_ = json.NewEncoder(w).Encode(rdClient.DealsListResponse{Deals: nil, Total: 0})
+				return
+			}
+			createdDeal = true
+			_ = json.NewEncoder(w).Encode(rdClient.DealResponse{ID: "d1", Name: "ABC - Credito"})
+		case "/tasks":
+			if r.Method == http.MethodGet {
+				if got := r.URL.Query().Get("deal_id"); got != "d1" {
+					t.Fatalf("expected task lookup for created deal, got %q", got)
+				}
+				_ = json.NewEncoder(w).Encode(rdClient.TasksListResponse{Tasks: nil, Total: 0})
+				return
+			}
+			createdTask = true
+			_ = json.NewEncoder(w).Encode(rdClient.TaskResponse{ID: "t1", Subject: "Ligar", Date: "2026-07-30", Hour: "10:00", Deal: rdClient.TaskDealResponse{ID: "d1", Name: "ABC - Credito"}})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	svc := rdSvc.New(rdClient.NewWithBaseURL("key", srv.URL))
+	result, err := svc.CreateDeal(context.Background(), rdSvc.CreateDealParams{
+		Name:            "ABC - Credito",
+		FollowUpSubject: "Ligar",
+		FollowUpDate:    "2026-07-30",
+		FollowUpHour:    "10:00",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !createdDeal || !createdTask || result.Task.ID != "t1" {
+		t.Fatalf("expected deal and follow-up task created, result %#v", result)
+	}
+}
+
+func TestCreateScheduledTask_ReusesExistingEquivalentTask(t *testing.T) {
+	postCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/deals":
+			_ = json.NewEncoder(w).Encode(rdClient.DealsListResponse{
+				Deals: []rdClient.DealResponse{{ID: "d1", Name: "ABC - Credito"}},
+				Total: 1,
+			})
+		case "/tasks":
+			if r.Method == http.MethodPost {
+				postCount++
+				t.Fatalf("did not expect duplicate task post")
+			}
+			_ = json.NewEncoder(w).Encode(rdClient.TasksListResponse{
+				Tasks: []rdClient.TaskResponse{{ID: "t1", Subject: "Ligar", Type: "task", Date: "2026-07-30", Hour: "10:00", Deal: rdClient.TaskDealResponse{ID: "d1", Name: "ABC - Credito"}}},
+				Total: 1,
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	svc := rdSvc.New(rdClient.NewWithBaseURL("key", srv.URL))
+	task, err := svc.CreateScheduledTask(context.Background(), rdSvc.CreateScheduledTaskParams{
+		DealName: "ABC - Credito",
+		Subject:  "Ligar",
+		Type:     "task",
+		Date:     "2026-07-30",
+		Hour:     "10:00",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if task.ID != "t1" || postCount != 0 {
+		t.Fatalf("expected existing task reused, got %#v postCount=%d", task, postCount)
+	}
+}
+
+func TestCreateDealActivity_ResolvesDealByCustomerAndAvoidsDuplicate(t *testing.T) {
+	postCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/deals":
+			_ = json.NewEncoder(w).Encode(rdClient.DealsListResponse{
+				Deals: []rdClient.DealResponse{{
+					ID:       "d1",
+					Name:     "ABC - Credito",
+					Contacts: []rdClient.DealContactResponse{{ID: "c1", Name: "Empresa ABC"}},
+				}},
+				Total: 1,
+			})
+		case "/activities":
+			if r.Method == http.MethodPost {
+				postCount++
+				t.Fatalf("did not expect duplicate activity post")
+			}
+			_ = json.NewEncoder(w).Encode(rdClient.ActivitiesListResponse{
+				Activities: []rdClient.ActivityResponse{{ID: "a1", Text: "Cliente aprovou a proposta", Date: "2026-07-29"}},
+				Total:      1,
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	svc := rdSvc.New(rdClient.NewWithBaseURL("key", srv.URL))
+	activity, err := svc.CreateDealActivity(context.Background(), rdSvc.CreateDealActivityParams{
+		Company: "Empresa ABC",
+		UserID:  "u1",
+		Text:    "Cliente aprovou a proposta",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if activity.ID != "a1" || postCount != 0 {
+		t.Fatalf("expected existing activity reused, got %#v postCount=%d", activity, postCount)
+	}
+}
+
 func TestGetDealSummaryForOwners_GathersDealActivitiesContactsAndOpenTasks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -291,11 +542,25 @@ func TestGetDealSummaryForOwners_GathersDealActivitiesContactsAndOpenTasks(t *te
 			if got := r.URL.Query().Get("deal_id"); got != "d1" {
 				t.Errorf("expected task deal_id d1, got %q", got)
 			}
-			if got := r.URL.Query().Get("done"); got != "false" {
-				t.Errorf("expected done=false, got %q", got)
-			}
 			if got := r.URL.Query().Get("limit"); got != strconv.Itoa(20) {
 				t.Errorf("expected limit=20, got %q", got)
+			}
+			if r.URL.Query().Get("done") == "true" {
+				_ = json.NewEncoder(w).Encode(rdClient.TasksListResponse{
+					Tasks: []rdClient.TaskResponse{{
+						ID:      "t2",
+						Subject: "Primeiro contato realizado",
+						Date:    "2026-06-30",
+						Hour:    "09:00",
+						Deal:    rdClient.TaskDealResponse{ID: "d1", Name: "Alpha"},
+						Users:   []rdClient.TaskUserResponse{{Name: "Glauco"}},
+					}},
+					Total: 1,
+				})
+				return
+			}
+			if got := r.URL.Query().Get("done"); got != "false" {
+				t.Errorf("expected done=false, got %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(rdClient.TasksListResponse{
 				Tasks: []rdClient.TaskResponse{{

@@ -489,15 +489,15 @@ func TestWebhookMetaGuidedScheduledTaskFlow(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected first webhook 200, got %d", w.Code)
 	}
-	if sender.text != "Em qual negociacao devo criar essa tarefa?" {
-		t.Fatalf("expected deal question, got %q", sender.text)
+	if sender.text != "Para qual cliente?" {
+		t.Fatalf("expected customer question, got %q", sender.text)
 	}
 
-	w = postMetaPayload(t, r, textPayload(t, "5511999999999", "text", "Casa do Aroma - F200"), true)
+	w = postMetaPayload(t, r, textPayload(t, "5511999999999", "text", "Casa do Aroma"), true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected pending webhook 200, got %d", w.Code)
 	}
-	if sender.text != "Qual e o assunto da tarefa?" {
-		t.Fatalf("expected subject question, got %q", sender.text)
+	if sender.text != "Para qual produto?" {
+		t.Fatalf("expected product question, got %q", sender.text)
 	}
 }

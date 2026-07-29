@@ -29,6 +29,9 @@ export type Alert = {
   deal_stage_name: string;
   time_threshold_hours: number;
   repeat_interval_hours: number;
+  notification_mode: "text" | "whatsapp_template";
+  whatsapp_template_name: string;
+  whatsapp_template_language: string;
   message_template: string;
   recipient_ids: string[];
   active: boolean;

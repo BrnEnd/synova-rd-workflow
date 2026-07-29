@@ -134,7 +134,7 @@ func (s *DynamoDBStore) GetAlert(ctx context.Context, id string) (domain.Alert, 
 }
 
 func (s *DynamoDBStore) SaveAlert(ctx context.Context, a domain.Alert) error {
-	item := alertItem{PK: adminPKAlerts, SK: a.ID, ID: a.ID, Name: a.Name, DealStageID: a.DealStageID, DealStageName: a.DealStageName, TimeThresholdHours: a.TimeThresholdHours, RepeatIntervalHours: a.RepeatIntervalHours, MessageTemplate: a.MessageTemplate, RecipientIDs: a.RecipientIDs, Active: a.Active, LastCheckedAt: a.LastCheckedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, EntityType: "admin_alert"}
+	item := alertItem{PK: adminPKAlerts, SK: a.ID, ID: a.ID, Name: a.Name, DealStageID: a.DealStageID, DealStageName: a.DealStageName, TimeThresholdHours: a.TimeThresholdHours, RepeatIntervalHours: a.RepeatIntervalHours, NotificationMode: a.NotificationMode, WhatsAppTemplateName: a.WhatsAppTemplateName, WhatsAppTemplateLang: a.WhatsAppTemplateLang, MessageTemplate: a.MessageTemplate, RecipientIDs: a.RecipientIDs, Active: a.Active, LastCheckedAt: a.LastCheckedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt, EntityType: "admin_alert"}
 	return s.put(ctx, item)
 }
 
@@ -302,25 +302,28 @@ func (i collaboratorItem) domain() domain.Collaborator {
 }
 
 type alertItem struct {
-	PK                  string    `dynamodbav:"PK"`
-	SK                  string    `dynamodbav:"SK"`
-	ID                  string    `dynamodbav:"id"`
-	Name                string    `dynamodbav:"name"`
-	DealStageID         string    `dynamodbav:"deal_stage_id"`
-	DealStageName       string    `dynamodbav:"deal_stage_name"`
-	TimeThresholdHours  int       `dynamodbav:"time_threshold_hours"`
-	RepeatIntervalHours int       `dynamodbav:"repeat_interval_hours"`
-	MessageTemplate     string    `dynamodbav:"message_template"`
-	RecipientIDs        []string  `dynamodbav:"recipient_ids"`
-	Active              bool      `dynamodbav:"active"`
-	LastCheckedAt       time.Time `dynamodbav:"last_checked_at"`
-	CreatedAt           time.Time `dynamodbav:"created_at"`
-	UpdatedAt           time.Time `dynamodbav:"updated_at"`
-	EntityType          string    `dynamodbav:"entity_type"`
+	PK                   string    `dynamodbav:"PK"`
+	SK                   string    `dynamodbav:"SK"`
+	ID                   string    `dynamodbav:"id"`
+	Name                 string    `dynamodbav:"name"`
+	DealStageID          string    `dynamodbav:"deal_stage_id"`
+	DealStageName        string    `dynamodbav:"deal_stage_name"`
+	TimeThresholdHours   int       `dynamodbav:"time_threshold_hours"`
+	RepeatIntervalHours  int       `dynamodbav:"repeat_interval_hours"`
+	NotificationMode     string    `dynamodbav:"notification_mode"`
+	WhatsAppTemplateName string    `dynamodbav:"whatsapp_template_name"`
+	WhatsAppTemplateLang string    `dynamodbav:"whatsapp_template_language"`
+	MessageTemplate      string    `dynamodbav:"message_template"`
+	RecipientIDs         []string  `dynamodbav:"recipient_ids"`
+	Active               bool      `dynamodbav:"active"`
+	LastCheckedAt        time.Time `dynamodbav:"last_checked_at"`
+	CreatedAt            time.Time `dynamodbav:"created_at"`
+	UpdatedAt            time.Time `dynamodbav:"updated_at"`
+	EntityType           string    `dynamodbav:"entity_type"`
 }
 
 func (i alertItem) domain() domain.Alert {
-	return domain.Alert{ID: i.ID, Name: i.Name, DealStageID: i.DealStageID, DealStageName: i.DealStageName, TimeThresholdHours: i.TimeThresholdHours, RepeatIntervalHours: i.RepeatIntervalHours, MessageTemplate: i.MessageTemplate, RecipientIDs: i.RecipientIDs, Active: i.Active, LastCheckedAt: i.LastCheckedAt, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt}
+	return domain.Alert{ID: i.ID, Name: i.Name, DealStageID: i.DealStageID, DealStageName: i.DealStageName, TimeThresholdHours: i.TimeThresholdHours, RepeatIntervalHours: i.RepeatIntervalHours, NotificationMode: i.NotificationMode, WhatsAppTemplateName: i.WhatsAppTemplateName, WhatsAppTemplateLang: i.WhatsAppTemplateLang, MessageTemplate: i.MessageTemplate, RecipientIDs: i.RecipientIDs, Active: i.Active, LastCheckedAt: i.LastCheckedAt, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt}
 }
 
 type allowlistItem struct {

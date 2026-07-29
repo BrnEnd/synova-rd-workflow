@@ -31,6 +31,9 @@ const emptyAlert: Alert = {
   deal_stage_name: "",
   time_threshold_hours: 48,
   repeat_interval_hours: 48,
+  notification_mode: "text",
+  whatsapp_template_name: "rdnotification",
+  whatsapp_template_language: "pt_BR",
   message_template: "A negociacao {{deal_name}} esta parada em {{deal_stage}} ha {{days_in_stage}} dias.",
   recipient_ids: [],
   active: false,
@@ -61,7 +64,13 @@ export function AdminPanel({ page }: { page: AdminPage }) {
       }
       setEmail(profile.email);
       setCollaborators((c.items ?? []).map((item) => ({ ...item, role: item.role || "seller", rdstation_id: item.rdstation_id || "", supervisor_id: item.supervisor_id || "" })));
-      setAlerts((a.items ?? []).map((item) => ({ ...item, repeat_interval_hours: item.repeat_interval_hours || 48 })));
+      setAlerts((a.items ?? []).map((item) => ({
+        ...item,
+        repeat_interval_hours: item.repeat_interval_hours || 48,
+        notification_mode: item.notification_mode || "text",
+        whatsapp_template_name: item.whatsapp_template_name || "rdnotification",
+        whatsapp_template_language: item.whatsapp_template_language || "pt_BR",
+      })));
       setAllowlist((w.items ?? []).map((item) => ({ ...item, role: item.role || "seller", collaborator_id: item.collaborator_id || "" })));
       listStages()
         .then((result) => {
@@ -87,8 +96,8 @@ export function AdminPanel({ page }: { page: AdminPage }) {
   const activeAlerts = useMemo(() => alerts.filter((item) => item.active), [alerts]);
   const activeAllowlist = useMemo(() => allowlist.filter((item) => item.active), [allowlist]);
   const alertRecipientOptions = useMemo(
-    () => collaborators.filter((item) => item.active || alertDraft.recipient_ids.includes(item.id ?? "")),
-    [collaborators, alertDraft.recipient_ids],
+    () => collaborators.filter((item) => (alertDraft.notification_mode !== "whatsapp_template" || item.role === "director") && (item.active || alertDraft.recipient_ids.includes(item.id ?? ""))),
+    [collaborators, alertDraft.notification_mode, alertDraft.recipient_ids],
   );
 
   async function submitCollaborator(e: React.FormEvent) {
@@ -164,7 +173,14 @@ export function AdminPanel({ page }: { page: AdminPage }) {
   }
 
   function editAlert(item: Alert) {
-    setAlertDraft({ ...item, repeat_interval_hours: item.repeat_interval_hours || 48, recipient_ids: item.recipient_ids ?? [] });
+    setAlertDraft({
+      ...item,
+      repeat_interval_hours: item.repeat_interval_hours || 48,
+      notification_mode: item.notification_mode || "text",
+      whatsapp_template_name: item.whatsapp_template_name || "rdnotification",
+      whatsapp_template_language: item.whatsapp_template_language || "pt_BR",
+      recipient_ids: item.recipient_ids ?? [],
+    });
     if (pathname !== "/alerts") window.location.href = "/alerts";
   }
 
@@ -313,10 +329,38 @@ export function AdminPanel({ page }: { page: AdminPage }) {
                         </div>
                       </Field>
                     </div>
-                    <Field label="Mensagem enviada">
+                    <label className="flex items-start gap-2 rounded-md border border-white/10 p-2.5 text-sm">
+                      <input
+                        className="mt-1"
+                        type="checkbox"
+                        checked={alertDraft.notification_mode === "whatsapp_template"}
+                        onChange={(e) => {
+                          const mode = e.target.checked ? "whatsapp_template" : "text";
+                          setAlertDraft({
+                            ...alertDraft,
+                            notification_mode: mode,
+                            whatsapp_template_name: alertDraft.whatsapp_template_name || "rdnotification",
+                            whatsapp_template_language: alertDraft.whatsapp_template_language || "pt_BR",
+                            recipient_ids: mode === "whatsapp_template" ? alertDraft.recipient_ids.filter((id) => collaborators.find((item) => item.id === id)?.role === "director") : alertDraft.recipient_ids,
+                          });
+                        }}
+                      />
+                      <span>Usar template oficial rdnotification<span className="block text-xs text-emerald-50/58">Envia pela Cloud API da Meta e permite apenas destinatarios de diretoria.</span></span>
+                    </label>
+                    {alertDraft.notification_mode === "whatsapp_template" && (
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <Field label="Template WhatsApp">
+                          <input className="field" value={alertDraft.whatsapp_template_name} onChange={(e) => setAlertDraft({ ...alertDraft, whatsapp_template_name: e.target.value })} />
+                        </Field>
+                        <Field label="Idioma">
+                          <input className="field" value={alertDraft.whatsapp_template_language} onChange={(e) => setAlertDraft({ ...alertDraft, whatsapp_template_language: e.target.value })} />
+                        </Field>
+                      </div>
+                    )}
+                    <Field label={alertDraft.notification_mode === "whatsapp_template" ? "Linha da lista de negociacoes" : "Mensagem enviada"}>
                       <textarea className="field min-h-28" value={alertDraft.message_template} onChange={(e) => setAlertDraft({ ...alertDraft, message_template: e.target.value })} />
                     </Field>
-                    <Field label="Quem recebe este alerta" help="Colaboradores inativos aparecem se ja estavam neste alerta, mas nao recebem envios.">
+                    <Field label="Quem recebe este alerta" help={alertDraft.notification_mode === "whatsapp_template" ? "No template rdnotification aparecem apenas colaboradores com perfil Diretoria." : "Colaboradores inativos aparecem se ja estavam neste alerta, mas nao recebem envios."}>
                       <div className="grid gap-2 rounded-md border border-white/10 p-2.5">
                         {alertRecipientOptions.length === 0 && <p className="text-sm text-emerald-50/62">Cadastre um colaborador ativo primeiro.</p>}
                         {alertRecipientOptions.map((item) => (
@@ -358,7 +402,7 @@ export function AdminPanel({ page }: { page: AdminPage }) {
                   <Rows items={alerts} getKey={(item) => item.id ?? item.name} render={(item) => (
                     <Row
                       title={item.name}
-                      subtitle={`${item.deal_stage_name || item.deal_stage_id} - enviar apos ${item.time_threshold_hours}h - repetir ${item.repeat_interval_hours || 48}h - ${recipientSummary(item.recipient_ids ?? [])}`}
+                      subtitle={`${item.notification_mode === "whatsapp_template" ? `Template ${item.whatsapp_template_name || "rdnotification"} - ` : ""}${item.deal_stage_name || item.deal_stage_id} - enviar apos ${item.time_threshold_hours}h - repetir ${item.repeat_interval_hours || 48}h - ${recipientSummary(item.recipient_ids ?? [])}`}
                       active={item.active}
                       onToggle={() => toggleAlert(item)}
                       onEdit={() => editAlert(item)}

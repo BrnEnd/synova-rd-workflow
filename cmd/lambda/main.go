@@ -73,7 +73,7 @@ func buildRouter(cfg *config.Config, logger *slog.Logger, store *convStore.Dynam
 	if err != nil {
 		panic(err)
 	}
-	adminResources := adminSvc.NewResourceService(adminData, evolution, rd)
+	adminResources := adminSvc.NewResourceService(adminData, evolution, whatsApp, rd)
 	if err := adminResources.SeedAllowlist(context.Background(), cfg.EvolutionAllowedNumbers); err != nil {
 		logger.Warn("failed to seed admin allowlist from env", "error", err)
 	}

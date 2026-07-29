@@ -52,6 +52,45 @@ func (c *Client) SendTextMessage(ctx context.Context, to string, text string) er
 		},
 	}
 
+	return c.sendMessagePayload(ctx, payload)
+}
+
+// SendTemplateMessage sends an approved WhatsApp template with body text parameters.
+func (c *Client) SendTemplateMessage(ctx context.Context, to string, templateName string, languageCode string, bodyParams []string) error {
+	if strings.TrimSpace(languageCode) == "" {
+		languageCode = "pt_BR"
+	}
+
+	parameters := make([]map[string]string, 0, len(bodyParams))
+	for _, value := range bodyParams {
+		parameters = append(parameters, map[string]string{
+			"type": "text",
+			"text": value,
+		})
+	}
+
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"to":                strings.TrimPrefix(to, "+"),
+		"type":              "template",
+		"template": map[string]interface{}{
+			"name": templateName,
+			"language": map[string]string{
+				"code": languageCode,
+			},
+			"components": []map[string]interface{}{
+				{
+					"type":       "body",
+					"parameters": parameters,
+				},
+			},
+		},
+	}
+
+	return c.sendMessagePayload(ctx, payload)
+}
+
+func (c *Client) sendMessagePayload(ctx context.Context, payload map[string]interface{}) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("whatsapp marshal: %w", err)

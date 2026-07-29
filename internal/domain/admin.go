@@ -23,18 +23,21 @@ type Collaborator struct {
 }
 
 type Alert struct {
-	ID                  string    `json:"id"`
-	Name                string    `json:"name"`
-	DealStageID         string    `json:"deal_stage_id"`
-	DealStageName       string    `json:"deal_stage_name"`
-	TimeThresholdHours  int       `json:"time_threshold_hours"`
-	RepeatIntervalHours int       `json:"repeat_interval_hours"`
-	MessageTemplate     string    `json:"message_template"`
-	RecipientIDs        []string  `json:"recipient_ids"`
-	Active              bool      `json:"active"`
-	LastCheckedAt       time.Time `json:"last_checked_at,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                   string    `json:"id"`
+	Name                 string    `json:"name"`
+	DealStageID          string    `json:"deal_stage_id"`
+	DealStageName        string    `json:"deal_stage_name"`
+	TimeThresholdHours   int       `json:"time_threshold_hours"`
+	RepeatIntervalHours  int       `json:"repeat_interval_hours"`
+	NotificationMode     string    `json:"notification_mode"`
+	WhatsAppTemplateName string    `json:"whatsapp_template_name"`
+	WhatsAppTemplateLang string    `json:"whatsapp_template_language"`
+	MessageTemplate      string    `json:"message_template"`
+	RecipientIDs         []string  `json:"recipient_ids"`
+	Active               bool      `json:"active"`
+	LastCheckedAt        time.Time `json:"last_checked_at,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type AllowlistEntry struct {

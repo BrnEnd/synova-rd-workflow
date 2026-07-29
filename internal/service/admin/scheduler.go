@@ -22,6 +22,7 @@ type Scheduler struct {
 	store     AdminStore
 	rd        DealClient
 	evolution EvolutionAdminClient
+	whatsapp  WhatsAppTemplateClient
 	interval  time.Duration
 	logger    *slog.Logger
 	mu        sync.Mutex
@@ -36,8 +37,8 @@ type AlertExecutionOptions struct {
 	Force bool
 }
 
-func NewScheduler(store AdminStore, rd DealClient, evolution EvolutionAdminClient, interval time.Duration, logger *slog.Logger) *Scheduler {
-	return &Scheduler{store: store, rd: rd, evolution: evolution, interval: interval, logger: logger}
+func NewScheduler(store AdminStore, rd DealClient, evolution EvolutionAdminClient, whatsapp WhatsAppTemplateClient, interval time.Duration, logger *slog.Logger) *Scheduler {
+	return &Scheduler{store: store, rd: rd, evolution: evolution, whatsapp: whatsapp, interval: interval, logger: logger}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
@@ -69,7 +70,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	}
 	var matched, sentCount, errCount int
 	for _, alert := range alerts {
-		result, err := ExecuteAlert(ctx, s.store, s.rd, s.evolution, alert, AlertExecutionOptions{})
+		result, err := ExecuteAlert(ctx, s.store, s.rd, s.evolution, s.whatsapp, alert, AlertExecutionOptions{})
 		if err != nil {
 			errCount++
 			s.logger.ErrorContext(ctx, "admin scheduler alert failed", "component", "admin_scheduler", "alert_id", alert.ID, "error", err)
@@ -82,7 +83,8 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	s.logger.InfoContext(ctx, "admin scheduler cycle completed", "component", "admin_scheduler", "alerts_evaluated", len(alerts), "deals_matched", matched, "messages_sent", sentCount, "errors", errCount)
 }
 
-func ExecuteAlert(ctx context.Context, store AdminStore, rd DealClient, evolution EvolutionAdminClient, alert domain.Alert, opts AlertExecutionOptions) (AlertRunResult, error) {
+func ExecuteAlert(ctx context.Context, store AdminStore, rd DealClient, evolution EvolutionAdminClient, whatsapp WhatsAppTemplateClient, alert domain.Alert, opts AlertExecutionOptions) (AlertRunResult, error) {
+	alert = normalizeAlertDelivery(alert)
 	recipients, err := activeRecipientCollaborators(ctx, store, alert.RecipientIDs)
 	if err != nil {
 		return AlertRunResult{}, err
@@ -127,7 +129,17 @@ func ExecuteAlert(ctx context.Context, store AdminStore, rd DealClient, evolutio
 	message := renderAggregateMessage(alert, eligible)
 	var sendFailed bool
 	for _, recipient := range recipients {
-		if err := evolution.SendTextMessage(ctx, recipient.WhatsApp, message); err != nil {
+		var err error
+		if alert.NotificationMode == "whatsapp_template" {
+			if whatsapp == nil {
+				err = fmt.Errorf("%w: whatsapp_template_client", ErrInvalidInput)
+			} else {
+				err = whatsapp.SendTemplateMessage(ctx, recipient.WhatsApp, alert.WhatsAppTemplateName, alert.WhatsAppTemplateLang, []string{recipient.Name, message})
+			}
+		} else {
+			err = evolution.SendTextMessage(ctx, recipient.WhatsApp, message)
+		}
+		if err != nil {
 			sendFailed = true
 			result.SendErrors++
 			continue
@@ -146,6 +158,19 @@ func ExecuteAlert(ctx context.Context, store AdminStore, rd DealClient, evolutio
 	}
 	markAlertChecked(ctx, store, alert)
 	return result, nil
+}
+
+func normalizeAlertDelivery(alert domain.Alert) domain.Alert {
+	alert.NotificationMode = normalizeNotificationMode(alert.NotificationMode)
+	if alert.NotificationMode == "whatsapp_template" {
+		if strings.TrimSpace(alert.WhatsAppTemplateName) == "" {
+			alert.WhatsAppTemplateName = "rdnotification"
+		}
+		if strings.TrimSpace(alert.WhatsAppTemplateLang) == "" {
+			alert.WhatsAppTemplateLang = "pt_BR"
+		}
+	}
+	return alert
 }
 
 func maskPhone(phone string) string {
@@ -189,6 +214,18 @@ func markAlertChecked(ctx context.Context, store AdminStore, alert domain.Alert)
 
 func renderAggregateMessage(alert domain.Alert, deals []eligibleDeal) string {
 	var b strings.Builder
+	if alert.NotificationMode == "whatsapp_template" {
+		for i, item := range deals {
+			line := renderTemplate(alert.MessageTemplate, item.Deal, alert.DealStageName, time.Since(item.UpdatedAt))
+			fmt.Fprintf(&b, "%d. %s\n", i+1, line)
+			fmt.Fprintf(&b, "Responsavel: %s", responsibleName(item.Deal))
+			if i < len(deals)-1 {
+				b.WriteString("\n\n")
+			}
+		}
+		return truncateTemplateBodyParam(b.String())
+	}
+
 	fmt.Fprintf(&b, "Alerta: %s\n", alert.Name)
 	fmt.Fprintf(&b, "Estagio: %s\n", alert.DealStageName)
 	fmt.Fprintf(&b, "Negociacoes paradas: %d\n\n", len(deals))
@@ -201,6 +238,15 @@ func renderAggregateMessage(alert domain.Alert, deals []eligibleDeal) string {
 		}
 	}
 	return b.String()
+}
+
+func truncateTemplateBodyParam(value string) string {
+	const maxTemplateBodyParamRunes = 900
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= maxTemplateBodyParamRunes {
+		return string(runes)
+	}
+	return string(runes[:maxTemplateBodyParamRunes]) + "\n..."
 }
 
 func renderTemplate(template string, deal rdClient.DealResponse, stage string, age time.Duration) string {
